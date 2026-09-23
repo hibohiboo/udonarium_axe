@@ -1,7 +1,12 @@
 import { DataElement, DataElementAttribute } from '@axe/domain/data/data-element';
 
-/** When a buff's remaining rounds are counted down. */
-export const BUFF_TIMINGS = ['roundEnd', 'turnStart', 'turnEnd'] as const;
+/**
+ * When a buff's remaining rounds are counted down.
+ *
+ * `none` is never: a state that holds until somebody takes it away, which is what a status
+ * ailment with no duration is. Nothing counts it down, by the clock or by hand.
+ */
+export const BUFF_TIMINGS = ['roundEnd', 'turnStart', 'turnEnd', 'none'] as const;
 
 export type BuffTiming = (typeof BUFF_TIMINGS)[number];
 
@@ -24,21 +29,40 @@ const TIMING_TOKENS: Record<string, BuffTiming> = {
   手番終了時: 'turnEnd',
   手番終了: 'turnEnd',
   終了: 'turnEnd',
+  none: 'none',
+  なし: 'none',
+  永続: 'none',
+  解除まで: 'none',
+  消えない: 'none',
 };
 
+/**
+ * Reads a timing out of a chat token, written in English or Japanese and in any case. Null for a
+ * token that names none.
+ */
 export function resolveBuffTiming(token: string): BuffTiming | null {
   const normalized = (token ?? '').trim();
   if (normalized.length < 1) return null;
   return TIMING_TOKENS[normalized] ?? TIMING_TOKENS[normalized.toLowerCase()] ?? null;
 }
 
+/** Whether a chat token names a moment a buff counts down at. */
 export function isBuffTimingToken(token: string): boolean {
   return resolveBuffTiming(token) !== null;
 }
 
+/**
+ * When this buff counts down, as stored on it. A missing or unknown value reads as the end of the
+ * round.
+ */
 export function buffTimingOf(element: DataElement): BuffTiming {
   const stored = (element.getAttribute(DataElementAttribute.BUFF_TIMING) ?? '').trim();
   return (BUFF_TIMINGS as readonly string[]).includes(stored) ? (stored as BuffTiming) : DEFAULT_BUFF_TIMING;
+}
+
+/** Whether time takes this buff away at all. */
+export function buffExpires(element: DataElement): boolean {
+  return buffTimingOf(element) !== 'none';
 }
 
 /** Whoever a turn belongs to, matched by either half so a trigger can be written down as a name. */

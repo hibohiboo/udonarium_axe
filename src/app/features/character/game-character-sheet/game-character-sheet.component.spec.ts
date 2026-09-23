@@ -1,8 +1,8 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
-import { Card } from '@axe/domain/card/card';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
+import { Card, CardState } from '@axe/domain/card/card';
 import { GameCharacter } from '@axe/domain/character/game-character';
-import { DataElementAttribute, DataElementRole } from '@axe/domain/data/data-element';
+import { DataElement, DataElementAttribute, DataElementRole } from '@axe/domain/data/data-element';
 import { DiceSymbol } from '@axe/domain/dice/dice-symbol';
 import { Terrain } from '@axe/domain/tabletop/terrain';
 import { GameCharacterSheetComponent } from '@axe/features/character/game-character-sheet/game-character-sheet.component';
@@ -30,6 +30,92 @@ describe('GameCharacterSheetComponent', () => {
     expect(component).toBeTruthy();
   });
 
+  describe('the width a card is set to', () => {
+    function sheetWith(sectionName: string): { character: GameCharacter; section: DataElement } {
+      const character = GameCharacter.create('幅', 1, '');
+      character.addExtendData();
+      const section = DataElement.create(sectionName, '', {});
+      character.detailDataElement!.appendChild(section);
+      component.tabletopObject = character;
+      fixture.detectChanges();
+      return { character, section };
+    }
+
+    function cardOf(sectionName: string): HTMLElement {
+      return [...(fixture.nativeElement as HTMLElement).querySelectorAll('div')].find(
+        (element) => element.className.includes('flex-[1_1_200px]') && (element.textContent ?? '').includes(sectionName)
+      )!;
+    }
+
+    function pressWidth(sectionName: string): void {
+      [...cardOf(sectionName).querySelectorAll('button')]
+        .find((button) => button.getAttribute('title') === 'カラム幅を切り替え')!
+        .click();
+      fixture.detectChanges();
+    }
+
+    it('holds a card to the full row once it is done being edited', () => {
+      const { character, section } = sheetWith('全幅の節');
+
+      try {
+        component.toggleElementEdit(section.identifier);
+        fixture.detectChanges();
+        pressWidth('全幅の節');
+        pressWidth('全幅の節');
+        expect(component.getCardColspan(section)).toBe('full');
+
+        component.toggleElementEdit(section.identifier);
+        fixture.detectChanges();
+
+        expect(cardOf('全幅の節').className).toContain('flex-[1_1_100%]!');
+      } finally {
+        character.destroy();
+      }
+    });
+
+    it('gives a card set to two the room for two, and the plain one none of it', () => {
+      const { character, section } = sheetWith('二列の節');
+
+      try {
+        component.toggleElementEdit(section.identifier);
+        fixture.detectChanges();
+        pressWidth('二列の節');
+        component.toggleElementEdit(section.identifier);
+        fixture.detectChanges();
+        expect(cardOf('二列の節').className).toContain('grow-2!');
+
+        component.toggleElementEdit(section.identifier);
+        fixture.detectChanges();
+        pressWidth('二列の節');
+        pressWidth('二列の節');
+        component.toggleElementEdit(section.identifier);
+        fixture.detectChanges();
+
+        expect(component.getCardColspan(section)).toBe('1');
+        expect(cardOf('二列の節').className).not.toContain('grow-2!');
+        expect(cardOf('二列の節').className).not.toContain('flex-[1_1_100%]!');
+      } finally {
+        character.destroy();
+      }
+    });
+  });
+
+  it('leaves a drop it has nothing to reorder for the rest of the page to answer', () => {
+    const character = GameCharacter.create('落とされ先', 1, '');
+    component.tabletopObject = character;
+
+    try {
+      const dropped = { preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as DragEvent;
+
+      component.onDrop(dropped, 'nothing-was-dragged');
+
+      expect(dropped.preventDefault).not.toHaveBeenCalled();
+      expect(dropped.stopPropagation).not.toHaveBeenCalled();
+    } finally {
+      character.destroy();
+    }
+  });
+
   it('edits a card and adds to it as well', () => {
     const card = Card.create('効果カード', 'front.png', 'back.png');
     component.tabletopObject = card;
@@ -45,6 +131,120 @@ describe('GameCharacterSheetComponent', () => {
       component.addDataElement();
 
       expect(card.detailDataElement?.children.length).toBe(beforeCount + 1);
+    } finally {
+      card.destroy();
+    }
+  });
+
+  it('debounces card face text while typing and flushes it on request', () => {
+    vi.useFakeTimers();
+    const card = Card.create('Information', 'front.png', 'back.png');
+    component.tabletopObject = card;
+    const textarea = document.createElement('textarea');
+    textarea.value = 'First draft';
+
+    try {
+      component.setCardOwnFaceText(card, { target: textarea } as unknown as Event);
+      expect(card.faceText).toBe('');
+
+      vi.advanceTimersByTime(65);
+      expect(card.faceText).toBe('');
+      vi.advanceTimersByTime(1);
+      expect(card.faceText).toBe('First draft');
+
+      textarea.value = 'Final draft';
+      component.setCardOwnFaceText(card, { target: textarea } as unknown as Event);
+      component.flushCardOwnFaceText();
+      expect(card.faceText).toBe('Final draft');
+    } finally {
+      vi.useRealTimers();
+      card.destroy();
+    }
+  });
+
+  it('takes a new font size as it is typed rather than waiting for the field to be left', () => {
+    const card = Card.create('Sized card', 'front.png', 'back.png');
+    component.tabletopObject = card;
+
+    try {
+      fixture.detectChanges();
+      const field = fixture.nativeElement.querySelector('input[type="number"][max="120"]') as HTMLInputElement;
+      expect(field.value).toBe(`${Card.DEFAULT_FACE_FONT_SIZE}`);
+
+      field.value = '1';
+      field.dispatchEvent(new Event('input'));
+      expect(card.faceFontSize).toBe(1);
+    } finally {
+      card.destroy();
+    }
+  });
+
+  it('lets a colour be picked for the face text and keeps it from a hidden card', () => {
+    const card = Card.create('Coloured card', 'front.png', 'back.png');
+    component.tabletopObject = card;
+    const picker = document.createElement('input');
+    picker.type = 'color';
+    picker.value = '#ff8800';
+
+    try {
+      component.setCardOwnFaceFontColor(card, { target: picker } as unknown as Event);
+      expect(card.faceFontColor).toBe('#ff8800');
+      expect(component.cardOwnFaceFontColor(card)).toBe('#ff8800');
+
+      card.state = CardState.BACK;
+      card.owner = 'another-user';
+      expect(component.cardOwnFaceFontColor(card)).toBe(Card.DEFAULT_FACE_FONT_COLOR);
+
+      picker.value = '#00ff00';
+      component.setCardOwnFaceFontColor(card, { target: picker } as unknown as Event);
+      expect(card.faceFontColor).toBe('#ff8800');
+    } finally {
+      card.destroy();
+    }
+  });
+
+  it('does not put a hidden card face text into the editing DOM', () => {
+    const card = Card.create('Hidden card', 'front.png', 'back.png');
+    card.faceText = 'secret text';
+    card.state = CardState.BACK;
+    card.owner = 'another-user';
+    component.tabletopObject = card;
+
+    try {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('[data-card-face-locked]')).toBeTruthy();
+      expect(fixture.nativeElement.querySelector('textarea')).toBeNull();
+      expect(fixture.nativeElement.textContent).not.toContain('secret text');
+      expect(component.cardOwnFaceText(card)).toBe('');
+    } finally {
+      card.destroy();
+    }
+  });
+
+  it('ignores text updates while the card face is hidden', () => {
+    const card = Card.create('Hidden card', 'front.png', 'back.png');
+    card.faceText = 'original secret';
+    card.state = CardState.BACK;
+    card.owner = 'another-user';
+    const textarea = document.createElement('textarea');
+    textarea.value = 'attempted overwrite';
+
+    try {
+      component.setCardOwnFaceText(card, { target: textarea } as unknown as Event);
+      expect(card.faceText).toBe('original secret');
+    } finally {
+      card.destroy();
+    }
+  });
+
+  it('keeps another users claimed face out of the editor even if its state is front', () => {
+    const card = Card.create('Claimed card', 'front.png', 'back.png');
+    card.faceText = 'claimed secret';
+    card.owner = 'another-user';
+
+    try {
+      expect(component.canReadCardFace(card)).toBe(false);
+      expect(component.cardOwnFaceText(card)).toBe('');
     } finally {
       card.destroy();
     }
@@ -182,6 +382,62 @@ describe('GameCharacterSheetComponent', () => {
     it('saves without throwing', async () => {
       component.tabletopObject = null;
       await expect(component.saveToXML()).resolves.not.toThrow();
+    });
+  });
+
+  describe('naming a portrait', () => {
+    function makeCharacter(): GameCharacter {
+      const character = GameCharacter.create('立ち絵持ち', 1, '');
+      character.addExtendData();
+      character.imageDataElement!.appendChild(DataElement.create('imageIdentifier', 'img-1', { type: 'image' }, ''));
+      return character;
+    }
+
+    function changeEvent(value: string): Event {
+      return { target: { value } } as unknown as Event;
+    }
+
+    it('starts with no name on any portrait', () => {
+      const character = makeCharacter();
+      component.tabletopObject = character;
+
+      try {
+        expect(component.portraitName()).toBe('');
+        expect(component.portraitImages().map((portrait) => portrait.name)).toEqual(['', '']);
+      } finally {
+        character.destroy();
+      }
+    });
+
+    it('writes the name onto the portrait that is picked out', () => {
+      const character = makeCharacter();
+      component.tabletopObject = character;
+
+      try {
+        component.setKomaIndex(1);
+        component.setPortraitName(changeEvent('笑顔'));
+
+        expect(component.portraitName()).toBe('笑顔');
+        expect(component.portraitImages().map((portrait) => portrait.name)).toEqual(['', '笑顔']);
+      } finally {
+        character.destroy();
+      }
+    });
+
+    it('leaves the other portraits alone', () => {
+      const character = makeCharacter();
+      component.tabletopObject = character;
+
+      try {
+        component.setKomaIndex(0);
+        component.setPortraitName(changeEvent('通常'));
+        component.setKomaIndex(1);
+        component.setPortraitName(changeEvent('笑顔'));
+
+        expect(component.portraitImages().map((portrait) => portrait.name)).toEqual(['通常', '笑顔']);
+      } finally {
+        character.destroy();
+      }
     });
   });
 });

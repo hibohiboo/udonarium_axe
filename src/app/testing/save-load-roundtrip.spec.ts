@@ -1,7 +1,10 @@
 import { TestBed } from '@angular/core/testing';
+import { LegacyScratchMaskMigrationService } from '@axe/application/tabletop/legacy-scratch-mask-migration.service';
+import { ImageStorage } from '@axe/core/storage/image-storage';
 import { ObjectFactory } from '@axe/core/sync/object-factory';
 import { ObjectSerializer } from '@axe/core/sync/object-serializer';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { xml2element } from '@axe/core/util/xml-util';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { ChatTabList } from '@axe/domain/chat/chat-tab-list';
 import {
@@ -10,9 +13,22 @@ import {
   DataElementFieldType,
   DataElementRole,
 } from '@axe/domain/data/data-element';
+import { Hotbar } from '@axe/domain/hotbar/hotbar';
+import { emptyHotbarSlotDraft } from '@axe/domain/hotbar/hotbar-draft';
+import { HotbarSlot } from '@axe/domain/hotbar/hotbar-slot';
+import { Config } from '@axe/domain/peer/config';
 import { ReloadCheck } from '@axe/domain/peer/reload-check';
-import { GameTable } from '@axe/domain/tabletop/game-table';
+import { Room } from '@axe/domain/peer/room';
+import { CellBits } from '@axe/domain/tabletop/fog/cell-bits';
+import { cellCount, cellGridOf } from '@axe/domain/tabletop/fog/cell-grid';
+import { ensureFogMemoryOn, fogMemoryOn } from '@axe/domain/tabletop/fog/fog-memory';
+import { GameTable, GridType } from '@axe/domain/tabletop/game-table';
+import { GameTableMask } from '@axe/domain/tabletop/game-table-mask';
+import { GameTableScratchMask } from '@axe/domain/tabletop/game-table-scratch-mask';
+import { TableBackgroundLayer } from '@axe/domain/tabletop/table-background-layer';
 import { Terrain, TerrainViewState } from '@axe/domain/tabletop/terrain';
+import { TEST_PROVIDERS } from '@axe/testing/test-providers';
+import { waitFor } from '@axe/testing/wait-for';
 
 describe('save and load round trip', () => {
   let store: ObjectStore;
@@ -22,17 +38,63 @@ describe('save and load round trip', () => {
     TestBed.configureTestingModule({});
     store = ObjectStore.instance;
     serializer = ObjectSerializer.instance;
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     (ChatTabList as unknown as { _instance: ChatTabList | undefined })._instance = undefined;
   });
 
   afterEach(() => {
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     (ChatTabList as unknown as { _instance: ChatTabList | undefined })._instance = undefined;
+  });
+
+  describe("the room's own rules", () => {
+    afterEach(() => {
+      (Config as unknown as { _instance: Config | undefined })._instance = undefined;
+    });
+
+    it('carries every answer through a save and a load', () => {
+      const config = Config.instance;
+      config.moveRangeEnabled = false;
+      config.moveDiagonally = false;
+      config.zocExtraCost = 0;
+      config.cellDistance = 5;
+      config.cellDistanceUnit = 'foot';
+      config.zocMode = 'stop';
+
+      const xml = serializer.toXml(config);
+      serializer.parseXml(xml);
+
+      expect(Config.instance.moveRangeEnabled).toBe(false);
+      expect(Config.instance.moveDiagonally).toBe(false);
+      expect(Config.instance.zocExtraCost).toBe(0);
+      expect(Config.instance.cellDistance).toBe(5);
+      expect(Config.instance.cellDistanceUnit).toBe('foot');
+      expect(Config.instance.zocMode).toBe('stop');
+    });
+
+    it('carries how the round is taken through a save and a load', () => {
+      const config = Config.instance;
+      config.turnOrderMode = 'faction';
+      config.factionPhaseMode = 'initiative';
+      config.factionOrder = 'p-a,p-b';
+      config.factionSkipUnassigned = true;
+
+      const xml = serializer.toXml(config);
+      serializer.parseXml(xml);
+
+      expect(Config.instance.turnOrderMode).toBe('faction');
+      expect(Config.instance.factionPhaseMode).toBe('initiative');
+      expect(Config.instance.factionOrder).toBe('p-a,p-b');
+      expect(Config.instance.factionSkipUnassigned).toBe(true);
+    });
+
+    it('reads a room that was saved before it had rules to answer for', () => {
+      const xml = '<config identifier="Config" _defaultDiceBot="DiceBot"></config>';
+
+      serializer.parseXml(xml);
+
+      expect(Config.instance.roomRuleAnswers.zocMode).toBeNull();
+      expect(Config.instance.roomRuleAnswers.cellDistance).toBeNull();
+      expect(Config.instance.roomRuleAnswers.moveRangeEnabled).toBeNull();
+    });
   });
 
   describe('terrain serialisation', () => {
@@ -56,6 +118,45 @@ describe('save and load round trip', () => {
       expect(xml).toContain('mode="2"');
       expect(xml).toContain('rotate="90"');
       expect(xml).toContain('isGrid="true"');
+    });
+
+    /**
+     * The attributes of a saved element, as the reader is handed them.
+     *
+     * Built by hand rather than off an element: happy-dom folds the case of an attribute name
+     * away, xml document or not, and every name a room is saved under has case in it.
+     */
+    function attributesOf(written: Record<string, string>): NamedNodeMap {
+      return Object.entries(written).map(([name, value]) => ({ name, value })) as unknown as NamedNodeMap;
+    }
+
+    it('says a sheer face in the saved room, and nothing of one that is not', () => {
+      const plain = Terrain.create('丘', 1, 1, 1, '', '');
+      const cliff = Terrain.create('崖', 1, 1, 1, '', '');
+      cliff.blocksClimb = true;
+
+      expect(serializer.toXml(plain)).toContain('blocksClimb="false"');
+      expect(serializer.toXml(cliff)).toContain('blocksClimb="true"');
+    });
+
+    it('leaves a room saved before there were sheer faces with none of them', () => {
+      const terrain = Terrain.create('崖', 1, 1, 1, '', '');
+
+      terrain.parseAttributes(attributesOf({ name: '崖', mode: '3' }));
+
+      expect(terrain.blocksClimb).toBe(false);
+    });
+
+    it('reads a sheer face back as something told apart from the word for it', () => {
+      const terrain = Terrain.create('崖', 1, 1, 1, '', '');
+
+      terrain.parseAttributes(attributesOf({ blocksClimb: 'true' }));
+
+      expect(terrain.blocksClimb).toBe(true);
+
+      terrain.parseAttributes(attributesOf({ blocksClimb: 'false' }));
+
+      expect(terrain.blocksClimb).toBe(false);
     });
 
     it('writes the location in dotted notation', () => {
@@ -85,6 +186,39 @@ describe('save and load round trip', () => {
       expect(xml).toContain('>砂漠</data>');
     });
 
+    it('carries what the party has explored with the table', () => {
+      const table = new GameTable();
+      table.initialize();
+      const grid = cellGridOf(4, 4, 50, GridType.SQUARE);
+      const bits = new CellBits(cellCount(grid));
+      bits.set(0);
+      bits.set(15);
+      ensureFogMemoryOn(table).write(grid, bits);
+
+      const xml = serializer.toXml(table);
+      expect(xml).toContain('<fog-memory');
+
+      const restored = serializer.parseXml(xml) as GameTable;
+      const memory = fogMemoryOn(restored);
+      expect(memory).not.toBeNull();
+      expect(memory?.read(grid).equals(bits)).toBe(true);
+    });
+
+    it('forgets what it held once the fog is cleared, and says that it has', () => {
+      const table = new GameTable();
+      table.initialize();
+      const grid = cellGridOf(4, 4, 50, GridType.SQUARE);
+      const bits = new CellBits(cellCount(grid));
+      bits.set(3);
+      const memory = ensureFogMemoryOn(table);
+      memory.write(grid, bits);
+
+      memory.reset();
+
+      expect(memory.read(grid).isEmpty).toBe(true);
+      expect(memory.generation).toBe(1);
+    });
+
     it('includes the terrain of a table in its own xml', () => {
       const table = new GameTable();
       table.initialize();
@@ -96,6 +230,46 @@ describe('save and load round trip', () => {
       expect(xml).toContain('<game-table');
       expect(xml).toContain('<terrain');
       expect(xml).toContain('>丘</data>');
+    });
+  });
+
+  describe('shared tabletop-display table settings', () => {
+    it('keeps the view the table recommends in the room data', () => {
+      const table = new GameTable('shared-tabletop-settings');
+      table.mode2d = true;
+      table.initialize();
+
+      const xml = serializer.toXml(table);
+      const restored = serializer.parseXml(xml) as GameTable;
+
+      expect(xml).toContain('mode2d="true"');
+      expect(restored.mode2d).toBe(true);
+    });
+
+    it('keeps what drifts under the board in the room data', () => {
+      const table = new GameTable('background-layers');
+      table.initialize();
+      const layer = new TableBackgroundLayer();
+      layer.initialize();
+      layer.order = 2;
+      layer.speedX = -40;
+      layer.speedY = 15;
+      layer.opacity = 0.6;
+      layer.scale = 1.5;
+      layer.placement = 'over';
+      table.appendChild(layer);
+
+      const xml = serializer.toXml(table);
+      const restored = serializer.parseXml(xml) as GameTable;
+
+      const back = restored.backgroundLayers;
+      expect(back).toHaveLength(1);
+      expect(back[0].order).toBe(2);
+      expect(back[0].speedX).toBe(-40);
+      expect(back[0].speedY).toBe(15);
+      expect(back[0].opacity).toBe(0.6);
+      expect(back[0].scale).toBe(1.5);
+      expect(back[0].placedOver).toBe(true);
     });
   });
 
@@ -192,6 +366,70 @@ describe('save and load round trip', () => {
     });
   });
 
+  describe('hotbar round trip', () => {
+    function hotbarFor(userId: string): Hotbar {
+      const hotbar = new Hotbar(`Hotbar_${userId}`);
+      hotbar.ownerUserId = userId;
+      hotbar.initialize();
+      return hotbar;
+    }
+
+    it('registers the hotbar and its slots with the object factory', () => {
+      expect(ObjectFactory.instance.create('hotbar')).toBeInstanceOf(Hotbar);
+      expect(ObjectFactory.instance.create('hotbar-slot')).toBeInstanceOf(HotbarSlot);
+    });
+
+    it('writes a slot down with where it sits and who it acts as', () => {
+      const character = GameCharacter.create('ホットバー確認', 1, '');
+      const hotbar = hotbarFor('reader');
+      const draft = emptyHotbarSlotDraft('chat');
+      draft.value = '2d6+3 攻撃';
+      draft.label = '全力攻撃';
+      draft.characterIdentifier = character.identifier;
+      hotbar.put(1, 4, draft);
+
+      const xml = serializer.toXml(hotbar);
+
+      expect(xml).toContain('ownerUserId="reader"');
+      expect(xml).toContain('page="1"');
+      expect(xml).toContain('slotIndex="4"');
+      expect(xml).toContain('label="全力攻撃"');
+      expect(xml).toContain(`characterIdentifier="${character.identifier}"`);
+      expect(xml).toContain('2d6+3 攻撃');
+
+      character.destroy();
+      store.clearDeleteHistory();
+    });
+
+    it('reads a slot back with its place as numbers', () => {
+      const hotbar = hotbarFor('reader');
+      const draft = emptyHotbarSlotDraft('effect');
+      draft.value = '爆炎';
+      hotbar.put(2, 9, draft);
+      const slotXml = serializer.toXml(hotbar.slotAt(2, 9)!);
+
+      hotbar.destroy();
+      store.clearDeleteHistory();
+
+      const restored = serializer.parseXml(slotXml) as HotbarSlot;
+
+      expect(restored.pageNo).toBe(2);
+      expect(restored.slotNo).toBe(9);
+      expect(restored.slotKind).toBe('effect');
+      expect(restored.argument).toBe('爆炎');
+    });
+
+    it('reads a slot whose place was never written as the first one', () => {
+      const slot = new HotbarSlot();
+      slot.initialize();
+
+      expect(slot.pageNo).toBe(0);
+      expect(slot.slotNo).toBe(0);
+      expect(slot.slotKind).toBe('chat');
+      expect(slot.characterIdentifier).toBe('');
+    });
+  });
+
   describe('chat tab list discards the tabs it replaces', () => {
     // the DOMParser in happy-dom cannot handle dotted attribute names such as imageIdentifier.0, so a test
     // cannot go through the toXml output of ChatTab.
@@ -264,6 +502,100 @@ describe('save and load round trip', () => {
       expect(names).toContain('New1');
       expect(names).toContain('New2');
       expect(names).toContain('New3');
+    });
+  });
+
+  describe('a room saved with a legacy scratch mask', () => {
+    beforeEach(async () => {
+      TestBed.configureTestingModule({ providers: [...TEST_PROVIDERS] });
+      const passes = vi.spyOn(LegacyScratchMaskMigrationService.prototype, 'migrate');
+      TestBed.inject(LegacyScratchMaskMigrationService);
+      await waitFor(() => passes.mock.calls.length > 0, { description: 'the pass made on starting' });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      ImageStorage.instance.images.forEach((image) => ImageStorage.instance.delete(image.identifier));
+    });
+
+    /**
+     * The attributes of a saved element, as the reader is handed them.
+     *
+     * Built by hand: happy-dom folds the case of attribute names and refuses dotted ones, and the
+     * legacy map is saved as one dotted attribute per cell.
+     */
+    function savedAttributes(written: Record<string, string>): NamedNodeMap {
+      return Object.entries(written).map(([name, value]) => ({ name, value })) as unknown as NamedNodeMap;
+    }
+
+    function savedLegacyContent(name: string, width: number, height: number): string {
+      return [
+        '<data name="table-scratch-mask">',
+        '<data name="image"><data type="image" name="imageIdentifier"></data></data>',
+        '<data name="common">',
+        `<data name="name">${name}</data><data name="width">${width}</data><data name="height">${height}</data>`,
+        '</data>',
+        '<data name="detail"></data>',
+        '</data>',
+      ].join('');
+    }
+
+    it('loads it as a regular mask on the table it was saved on, in the colour it carries by default', async () => {
+      const reloadCheck = new ReloadCheck('ReloadCheck');
+      reloadCheck.initialize();
+      reloadCheck.reloadCheckStart(false);
+
+      serializer.parseXml(
+        `<${Room.aliasName}><game-table name="古い卓"><table-scratch-mask color="#336699">` +
+          `${savedLegacyContent('古いマスク', 4, 3)}</table-scratch-mask></game-table></${Room.aliasName}>`
+      );
+
+      await waitFor(() => store.getObjects(GameTableMask).length === 1, {
+        description: 'the saved scratch mask to load as a regular mask',
+      });
+      const [table] = store.getObjects(GameTable);
+      const [mask] = table.masks;
+      expect(mask.name).toBe('古いマスク');
+      expect(mask.width).toBe(4);
+      expect(mask.height).toBe(3);
+      expect(mask.bgcolor).toBe('#FF5050');
+      expect(mask.opacity).toBeCloseTo(0.6);
+      expect(store.getObjects(GameTableScratchMask)).toEqual([]);
+    });
+
+    it('opens the cells its saved map had scratched open, and saves them on the regular mask', async () => {
+      const table = new GameTable('table-in-play');
+      table.initialize();
+      const legacy = ObjectFactory.instance.create<GameTableScratchMask>(GameTableScratchMask.aliasName)!;
+      legacy.parseAttributes(
+        savedAttributes({
+          'M.0': '1',
+          'M.1': 'false',
+          'M.50': 'true',
+          'M.51': 'false',
+          changeColor: '#00ff00',
+          isLock: 'true',
+          'location.x': '100',
+          'location.y': '50',
+        })
+      );
+      legacy.initialize();
+      legacy.parseInnerXml(
+        xml2element(`<table-scratch-mask>${savedLegacyContent('削りかけ', 2, 2)}</table-scratch-mask>`)!
+      );
+      table.appendChild(legacy);
+
+      await waitFor(() => table.masks.length === 1, { description: 'the read scratch mask to become a regular mask' });
+      const [mask] = table.masks;
+      expect(mask.scratchedGrids).toBe('1:0,1:1');
+      expect(mask.bgcolor).toBe('#00ff00');
+      expect(mask.isLock).toBe(true);
+      expect(mask.location).toEqual({ name: 'table', x: 100, y: 50 });
+
+      const written = serializer.toXml(table);
+      expect(written).toContain('<table-mask ');
+      expect(written).toContain('scratchedGrids="1:0,1:1"');
+      expect(written).not.toContain('table-scratch-mask');
     });
   });
 });

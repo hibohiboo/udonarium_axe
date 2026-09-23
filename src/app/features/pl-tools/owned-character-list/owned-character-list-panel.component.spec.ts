@@ -1,7 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { TableFocusService } from '@axe/application/tabletop/table-focus.service';
 import { PanelService } from '@axe/application/ui/panel.service';
 import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
-import { ObjectStore } from '@axe/core/sync/object-store';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { Party } from '@axe/domain/party/party';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
@@ -14,7 +14,6 @@ describe('OwnedCharacterListPanelComponent', () => {
   let component: OwnedCharacterListPanelComponent;
   let fixture: ComponentFixture<OwnedCharacterListPanelComponent>;
   let panelStub: { open: ReturnType<typeof vi.fn>; openLazy: ReturnType<typeof vi.fn> };
-  let store: ObjectStore;
 
   function makeCharacter(name: string, owner: string, locationName: string): GameCharacter {
     const character = GameCharacter.create(name, 1, '');
@@ -32,14 +31,11 @@ describe('OwnedCharacterListPanelComponent', () => {
     TestBed.overrideProvider(PanelService, { useValue: panelStub });
     fixture = TestBed.createComponent(OwnedCharacterListPanelComponent);
     component = fixture.componentInstance;
-    store = ObjectStore.instance;
     PeerCursor.createMyCursor();
     PeerCursor.myCursor.userId = 'me';
   });
 
   afterEach(() => {
-    store.getObjects().forEach((object) => store.delete(object, false));
-    store.clearDeleteHistory();
     PeerCursor.myCursor = null!;
   });
 
@@ -147,6 +143,15 @@ describe('OwnedCharacterListPanelComponent', () => {
     expect(selection.focusCoordinate()).toBe(before);
   });
 
+  it('looks for the piece where it stands, through the table focus', () => {
+    const character = makeCharacter('卓上', 'me', 'table');
+    const focusOn = vi.spyOn(TestBed.inject(TableFocusService), 'focusOn').mockImplementation(() => undefined);
+
+    (component as unknown as { focusToKoma: (c: GameCharacter) => void }).focusToKoma(character);
+
+    expect(focusOn).toHaveBeenCalledWith(character);
+  });
+
   it('opens the palette and the sheet', () => {
     const character = makeCharacter('自分のPC', 'me', 'table');
     const actions = component as unknown as {
@@ -172,5 +177,34 @@ describe('OwnedCharacterListPanelComponent', () => {
 
     setActive.call(component, character);
     expect(active.identifier()).toBeNull();
+  });
+
+  describe('narrowing the list', () => {
+    it('keeps only the characters whose name matches', () => {
+      makeCharacter('ゴブリンA', 'me', 'table');
+      makeCharacter('ゴブリンB', 'me', 'table');
+      makeCharacter('村長', 'me', 'table');
+      expect(component.filteredCharacters()).toHaveLength(3);
+
+      component.search.set('ゴブリン');
+
+      expect(component.filteredCharacters().map((character) => character.name)).toEqual(['ゴブリンA', 'ゴブリンB']);
+    });
+
+    it('says nothing matched rather than that the player owns none', () => {
+      makeCharacter('ゴブリン', 'me', 'table');
+      component.search.set('zzz');
+      fixture.detectChanges();
+
+      expect(fixture.nativeElement.textContent).toContain('一致するキャラクターがいません');
+    });
+
+    it('folds width so a full-width search still finds a half-width name', () => {
+      makeCharacter('HPポーション', 'me', 'table');
+
+      component.search.set('ＨＰ');
+
+      expect(component.filteredCharacters()).toHaveLength(1);
+    });
   });
 });

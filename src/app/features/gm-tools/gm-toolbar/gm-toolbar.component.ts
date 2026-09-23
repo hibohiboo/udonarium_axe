@@ -11,23 +11,22 @@ import {
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
-import { VisionService } from '@axe/application/tabletop/vision.service';
+import { GUEST_PERSONA, VisionService } from '@axe/application/tabletop/vision.service';
 import { TurnOrderService } from '@axe/application/turn/turn-order.service';
+import { ConfirmService } from '@axe/application/ui/confirm.service';
 import { PanelService } from '@axe/application/ui/panel.service';
+import { PieceOverlayPreferenceService } from '@axe/application/ui/piece-overlay-preference.service';
+import { ToolbarFoldService } from '@axe/application/ui/toolbar-fold.service';
 import { ViewportService } from '@axe/application/ui/viewport.service';
 import { WidgetVisibilityService } from '@axe/application/ui/widget-visibility.service';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { findOrphanedOwnership } from '@axe/domain/tabletop/ownership';
-import { BuffManagerPanelComponent } from '@axe/features/buff/buff-manager-panel/buff-manager-panel.component';
-import { HandRailService } from '@axe/features/card/hand-rail/hand-rail.service';
-import { EffectLibraryPanelComponent } from '@axe/features/effect/effect-library-panel/effect-library-panel.component';
-import { GameObjectListPanelComponent } from '@axe/features/gm-object-list/game-object-list-panel.component';
 import { NpcBarComponent } from '@axe/features/gm-tools/npc-bar/npc-bar.component';
 import { NpcBarService } from '@axe/features/gm-tools/npc-bar/npc-bar.service';
 import { NpcDragService } from '@axe/features/gm-tools/npc-bar/npc-drag.service';
-import { PartyListPanelComponent } from '@axe/features/gm-tools/party-list/party-list-panel.component';
-import { MapEditorPanelComponent } from '@axe/features/map-editor/editor/map-editor-panel.component';
+import { RoomPanelService } from '@axe/features/panels/room-panel.service';
+import { UiIconButtonComponent } from '@axe/ui/components/icon-button/icon-button.component';
 import { DraggableDirective } from '@axe/ui/directives/draggable.directive';
 import { turnIndicatorSignal } from '@axe/ui/turn/turn-indicator.signal';
 import { TranslocoModule } from '@jsverse/transloco';
@@ -36,21 +35,21 @@ import { TranslocoModule } from '@jsverse/transloco';
   changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'app-gm-toolbar',
   templateUrl: './gm-toolbar.component.html',
-  imports: [DraggableDirective, NpcBarComponent, TranslocoModule],
+  imports: [DraggableDirective, NpcBarComponent, TranslocoModule, UiIconButtonComponent],
 })
 export class GmToolbarComponent {
   protected readonly isCompact = inject(ViewportService).isCompact;
   protected readonly npcBar = inject(NpcBarService);
   protected readonly drag = inject(NpcDragService);
   private readonly panelService = inject(PanelService);
+  private readonly roomPanels = inject(RoomPanelService);
   private readonly objectChange = inject(ObjectChangeService);
   private readonly tabletopService = inject(TabletopService);
   private readonly visionService = inject(VisionService);
   private readonly objectStore = inject(ObjectStore);
   private readonly turnOrder = inject(TurnOrderService);
-  protected readonly handRail = inject(HandRailService);
-  protected readonly widgets = inject(WidgetVisibilityService);
   private readonly t = inject(TRANSLATE_FN);
+  private readonly confirm = inject(ConfirmService);
 
   private readonly barRef = viewChild<ElementRef<HTMLElement>>('bar');
   private savedLeft: string | null = null;
@@ -58,15 +57,47 @@ export class GmToolbarComponent {
 
   protected readonly personaOpen = signal(false);
 
+  private readonly folds = inject(ToolbarFoldService);
+
+  /** Whether this seat draws the resource bars and the buffs over the pieces, switched from here. */
+  protected readonly overlay = inject(PieceOverlayPreferenceService);
+
+  /** Whether the bar is folded down to its title. */
+  protected readonly folded = computed(() => this.folds.isFolded('gm'));
+
+  /** Folds the bar down to its title, or opens it again; what was open in it closes with it. */
+  protected toggleFold(): void {
+    this.personaOpen.set(false);
+    this.folds.toggle('gm');
+  }
+
   readonly isGameMaster = computed(() => {
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     return PeerCursor.isMyselfGameMaster;
   });
 
+  private readonly widgets = inject(WidgetVisibilityService);
+
+  /** Drawn for the game master unless they have hidden it from the widget menu. */
+  protected readonly shown = computed(() => this.isGameMaster() && this.widgets.gmToolbar());
+
+  /**
+   * The players whose eyes the master may look through.
+   *
+   * Guests are left out: every one of them sees the same, and the guest preview stands for them all.
+   */
   protected readonly personas = computed<PeerCursor[]>(() => {
     this.objectChange.collectionOf('PeerCursor')();
-    return this.objectStore.getObjects<PeerCursor>(PeerCursor).filter((cursor) => !cursor.isGameMaster);
+    return this.objectStore
+      .getObjects<PeerCursor>(PeerCursor)
+      .filter((cursor) => !cursor.isGameMaster && !cursor.isGuest);
   });
+
+  /** The preview that looks as a guest would, offered whether or not one is connected. */
+  protected readonly guestPersona = GUEST_PERSONA;
+
+  /** Whether the master is looking at the table as a guest would. */
+  protected readonly previewingGuest = computed(() => this.visionService.previewAsUserId() === GUEST_PERSONA);
 
   protected readonly currentPersona = computed<PeerCursor | null>(() => {
     const userId = this.visionService.previewAsUserId();
@@ -84,14 +115,16 @@ export class GmToolbarComponent {
     this.turnOrder.next();
   }
 
-  protected toggleHandRail(): void {
-    this.handRail.toggle();
-  }
-
   protected readonly darknessEnabled = computed(() => {
     const table = this.tabletopService.currentTable;
     this.objectChange.versionOf(table.identifier)();
     return table.darknessEnabled;
+  });
+
+  protected readonly fogEnabled = computed(() => {
+    const table = this.tabletopService.currentTable;
+    this.objectChange.versionOf(table.identifier)();
+    return table.fogEnabled;
   });
 
   constructor() {
@@ -113,53 +146,11 @@ export class GmToolbarComponent {
   }
 
   protected openObjectList(): void {
-    this.panelService.open(GameObjectListPanelComponent, {
-      width: 460,
-      height: 620,
-      left: 100,
-      top: 40,
-      title: this.t('common.panel.objectList'),
-    });
+    this.roomPanels.open('objectList', { left: 100, top: 40 });
   }
 
   protected openPartyList(): void {
-    this.panelService.open(PartyListPanelComponent, {
-      width: 460,
-      height: 620,
-      left: 120,
-      top: 60,
-      title: this.t('feature.gmTools.party.title'),
-    });
-  }
-
-  protected openBuffManager(): void {
-    this.panelService.open(BuffManagerPanelComponent, {
-      width: 560,
-      height: 420,
-      left: 160,
-      top: 100,
-      title: this.t('feature.buffManager.title'),
-    });
-  }
-
-  protected openEffectLibrary(): void {
-    this.panelService.open(EffectLibraryPanelComponent, {
-      width: 360,
-      height: 480,
-      left: 140,
-      top: 80,
-      title: this.t('feature.effect.panelTitle'),
-    });
-  }
-
-  protected openMapEditor(): void {
-    this.panelService.open(MapEditorPanelComponent, {
-      width: 1100,
-      height: 740,
-      left: 80,
-      top: 60,
-      title: this.t('feature.mapEditor.title'),
-    });
+    this.roomPanels.open('partyList', { left: 120, top: 60 });
   }
 
   protected toggleNpcBar(): void {
@@ -173,10 +164,17 @@ export class GmToolbarComponent {
     this.objectChange.notifyChanged(table.identifier);
   }
 
-  protected releaseOrphanedOwnership(): void {
+  protected toggleFog(): void {
+    const table = this.tabletopService.currentTable;
+    table.fogEnabled = !table.fogEnabled;
+    table.update();
+    this.objectChange.notifyChanged(table.identifier);
+  }
+
+  protected async releaseOrphanedOwnership(): Promise<void> {
     const orphaned = findOrphanedOwnership(this.objectStore.getObjects());
     if (orphaned.length === 0) return;
-    if (!confirm(this.t('app.fab.releaseOwnershipConfirm', { count: orphaned.length }))) return;
+    if (!(await this.confirm.ask(this.t('app.fab.releaseOwnershipConfirm', { count: orphaned.length })))) return;
     for (const object of orphaned) object.owner = '';
   }
 

@@ -56,6 +56,24 @@ describe('CharacterDiceService', () => {
     expect(deployed()).toHaveLength(3);
   });
 
+  it('takes back every die of that character on the table', () => {
+    const character = makeCharacter();
+    storeHeldDie(character, { name: '攻撃ダイス', count: 2, faces: [{ label: '1', imageIdentifier: '' }] });
+    service.deploy(character);
+    const stranger = makeSymbol('よその出目');
+
+    expect(service.laidOut(character)).toHaveLength(2);
+    expect(service.putAway(character)).toBe(2);
+
+    expect(service.laidOut(character)).toHaveLength(0);
+    expect(heldDiceOf(character)[0].count).toBe(2);
+    expect(ObjectStore.instance.get(stranger.identifier)).toBe(stranger);
+  });
+
+  it('takes back nothing where the character has laid none out', () => {
+    expect(service.putAway(makeCharacter())).toBe(0);
+  });
+
   it('gives each one the faces it was kept with', () => {
     const character = makeCharacter();
     storeHeldDie(character, {
@@ -114,6 +132,17 @@ describe('CharacterDiceService', () => {
     expect(ObjectStore.instance.get(symbol.identifier)).toBeNull();
   });
 
+  it('leaves a die the sheet could not keep on the table', () => {
+    const character = makeCharacter();
+    const symbol = makeSymbol();
+    for (const face of [...(symbol.imageDataElement?.children ?? [])]) face.destroy();
+
+    service.store(character, symbol);
+
+    expect(ObjectStore.instance.get(symbol.identifier)).toBe(symbol);
+    expect(service.held(character)).toEqual([]);
+  });
+
   it('reads back what a character keeps', () => {
     const character = makeCharacter();
     storeHeldDie(character, { name: 'ダイス', count: 2, faces: [{ label: '1', imageIdentifier: '' }] });
@@ -146,6 +175,18 @@ describe('CharacterDiceService', () => {
       const laid = service.deploy(character);
 
       expect(laid.map((die) => die.face)).toEqual(['2', '6']);
+    });
+
+    it('lays a die that was kept to its owner out on its first face', () => {
+      const character = makeCharacter();
+      const symbol = makeSymbol('隠しダイス');
+      symbol.face = '6';
+      symbol.owner = 'somebody';
+      service.store(character, symbol);
+
+      const [die] = service.deploy(character);
+
+      expect(die.face).toBe('1');
     });
 
     it('falls back to the first face for one it no longer has', () => {

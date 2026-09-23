@@ -16,8 +16,11 @@ export type EditorTool =
   | 'freehand'
   | 'text'
   | 'stamp'
-  | 'image';
+  | 'image'
+  | 'functionPaint'
+  | 'functionErase';
 
 export type LineKind = 'straight' | 'polyline' | 'curve' | 'closedCurve';
 
-export type ShapeGeneratorKind = 'rect' | 'ellipse' | 'triangle' | 'pentagon' | 'hexagon' | 'star5' | 'star6';
+export type ShapeGeneratorKind =
+  'rect' | 'ellipse' | 'triangle' | 'pentagon' | 'hexagon' | 'star5' | 'star6' | 'balloon';

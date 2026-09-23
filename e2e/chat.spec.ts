@@ -16,8 +16,35 @@ test.describe('チャットウィンドウ', () => {
     // ラジオ自体は class="peer hidden" で display:none、ラベル内のピル div を
     // クリックすると関連するラジオが checked になる。
     await chatTabPill(page, 'サブタブ').click();
-    const subTabRadio = page.locator('chat-window input[name="chat-tab"]').nth(1);
+    const subTabRadio = page.locator('chat-window input[name^="chat-tab"]').nth(1);
     await expect(subTabRadio).toBeChecked();
+  });
+
+  test('タブを右クリックして発言だけの別窓を開けること', async ({ page }) => {
+    const input = page.locator('chat-input textarea').first();
+    await input.fill('流れを見たい発言');
+    await input.press('Enter');
+    await expect(page.locator('chat-message').last()).toContainText('流れを見たい発言', { timeout: 15000 });
+
+    await chatTabPill(page, 'メインタブ').click({ button: 'right' });
+    await page.locator('context-menu').getByText('「メインタブ」を別窓で流す').click();
+
+    const stream = page.locator('chat-stream');
+    await expect(stream).toBeVisible();
+    await expect(stream).toContainText('流れを見たい発言');
+    // 読むための窓なので、発言の操作ボタンは出ない。
+    await expect(stream.locator('chat-message .material-icons')).toHaveCount(0);
+  });
+
+  test('別窓は同じ右クリックから閉じられること', async ({ page }) => {
+    await chatTabPill(page, 'サブタブ').click({ button: 'right' });
+    await page.locator('context-menu').getByText('「サブタブ」を別窓で流す').click();
+    await expect(page.locator('chat-stream')).toBeVisible();
+
+    await chatTabPill(page, 'サブタブ').click({ button: 'right' });
+    await page.locator('context-menu').getByText('別窓を閉じる').click();
+
+    await expect(page.locator('chat-stream')).toHaveCount(0);
   });
 
   test('送信ボタンが表示されること', async ({ page }) => {
@@ -112,9 +139,9 @@ test.describe('チャットタブ設定パネル', () => {
   test('新しいタブを追加できること', async ({ page }) => {
     await openChatSettingsMenuItem(page, 'タブ設定');
     await expect(page.locator('app-chat-tab-setting')).toBeVisible({ timeout: 5000 });
-    const initialTabCount = await page.locator('chat-window input[name="chat-tab"]').count();
+    const initialTabCount = await page.locator('chat-window input[name^="chat-tab"]').count();
     await page.locator('app-chat-tab-setting button[title="タブを追加"]').click();
-    await expect(page.locator('chat-window input[name="chat-tab"]')).toHaveCount(initialTabCount + 1, {
+    await expect(page.locator('chat-window input[name^="chat-tab"]')).toHaveCount(initialTabCount + 1, {
       timeout: 5000,
     });
   });
@@ -177,5 +204,66 @@ test.describe('ダイス表設定パネル', () => {
     const initialCount = await items.count();
     await page.locator('dice-table-setting button[title="新しい表を作る"]').click();
     await expect(items).toHaveCount(initialCount + 1, { timeout: 5000 });
+  });
+});
+
+test.describe('チャットログのスクロール枠', () => {
+  test.beforeEach(async ({ page }) => {
+    await waitAppReady(page);
+  });
+
+  test('ログが自前のスクロール枠を持ち、パネル本体は伸びないこと', async ({ page }) => {
+    const textarea = page.locator('textarea.chat-input');
+    const send = page.locator('chat-input').getByRole('button', { name: '送信' });
+    for (let i = 0; i < 30; i++) {
+      await textarea.fill(`スクロール検証 ${i}`);
+      await send.click();
+    }
+    await expect(page.locator('chat-tab').getByText('スクロール検証 29')).toBeVisible({ timeout: 10000 });
+
+    const log = page.locator('[data-testid="chat-log-scroll"]');
+    const box = await log.evaluate((el) => {
+      const panel = el.closest('ui-panel')!.querySelector<HTMLElement>('.overflow-auto');
+      return {
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+        panelOverflow: panel ? panel.scrollHeight - panel.clientHeight : -1,
+      };
+    });
+
+    expect(box.clientHeight).toBeGreaterThan(0);
+    expect(box.scrollHeight).toBeGreaterThan(box.clientHeight);
+    expect(box.panelOverflow).toBeLessThanOrEqual(1);
+
+    await expect
+      .poll(() => log.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop), { timeout: 5000 })
+      .toBeLessThanOrEqual(8);
+  });
+
+  test('ログを遡ると最新メッセージへ移動するボタンが出ること', async ({ page }) => {
+    const textarea = page.locator('textarea.chat-input');
+    const send = page.locator('chat-input').getByRole('button', { name: '送信' });
+    for (let i = 0; i < 60; i++) {
+      await textarea.fill(`ジャンプ検証 ${i}`);
+      await send.click();
+    }
+    await expect(page.locator('chat-tab').getByText('ジャンプ検証 59')).toBeVisible({ timeout: 10000 });
+
+    const overflow = await page
+      .locator('[data-testid="chat-log-scroll"]')
+      .evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(overflow).toBeGreaterThan(400);
+
+    const jump = page.locator('chat-window button', { hasText: '最新メッセージへ移動' });
+    await expect(jump).toBeHidden();
+
+    await page.locator('[data-testid="chat-log-scroll"]').evaluate((el) => {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event('scroll'));
+    });
+    await expect(jump).toBeVisible({ timeout: 5000 });
+
+    await jump.click();
+    await expect(jump).toBeHidden({ timeout: 5000 });
   });
 });

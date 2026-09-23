@@ -1,3 +1,4 @@
+import { PERF_PARTICLES, perfCounters } from '@axe/core/util/perf-counters';
 import { EffectParticle, EffectParticleLayer } from '@axe/domain/effect/effect-particles';
 import { particleTexture } from '@axe/features/effect/effect-canvas/particle-texture';
 
@@ -9,6 +10,13 @@ import { particleTexture } from '@axe/features/effect/effect-canvas/particle-tex
  */
 export type TextureProvider = (shape: EffectParticle['shape'], color: string) => CanvasImageSource | null;
 
+/**
+ * Clears the canvas and draws one frame of a particle layer at the given pixel ratio.
+ *
+ * Smoke and chunks are painted normally first, and every other shape is added over them with
+ * additive blending. Textures come from the shared particle texture cache unless another provider
+ * is passed; a particle whose texture cannot be made is skipped.
+ */
 export function drawParticleLayer(
   context: CanvasRenderingContext2D,
   layer: EffectParticleLayer,
@@ -17,6 +25,7 @@ export function drawParticleLayer(
 ): void {
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   context.clearRect(0, 0, layer.width, layer.height);
+  perfCounters.add(PERF_PARTICLES, layer.particles.length);
 
   // It walks the list twice; sorting into arrays first would throw seven hundred holders away every frame for a single sheet of weather.
   context.globalCompositeOperation = 'source-over';

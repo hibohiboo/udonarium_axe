@@ -1,7 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { TableFocusService } from '@axe/application/tabletop/table-focus.service';
 import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
-import { ObjectStore } from '@axe/core/sync/object-store';
 import { Card, CardState } from '@axe/domain/card/card';
 import { handLocationOf } from '@axe/domain/card/hand-location';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
@@ -9,12 +9,11 @@ import { PeerRole } from '@axe/domain/peer/peer-role';
 import { HandRailComponent } from '@axe/features/card/hand-rail/hand-rail.component';
 import { HandRailService } from '@axe/features/card/hand-rail/hand-rail.service';
 import { TEST_PROVIDERS } from '@axe/testing/test-providers';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('HandRailComponent', () => {
   let component: HandRailComponent;
   let fixture: ComponentFixture<HandRailComponent>;
-  let store: ObjectStore;
 
   function makeCard(locationName: string): Card {
     const card = Card.create('カード', 'front.png', 'back.png');
@@ -29,15 +28,12 @@ describe('HandRailComponent', () => {
     }).compileComponents();
     fixture = TestBed.createComponent(HandRailComponent);
     component = fixture.componentInstance;
-    store = ObjectStore.instance;
     PeerCursor.createMyCursor();
     PeerCursor.myCursor.userId = 'me';
     PeerCursor.myCursor.role = PeerRole.Player;
   });
 
   afterEach(() => {
-    store.getObjects().forEach((object) => store.delete(object, false));
-    store.clearDeleteHistory();
     PeerCursor.myCursor = null!;
   });
 
@@ -81,6 +77,17 @@ describe('HandRailComponent', () => {
     expect(fixture.nativeElement.querySelector('.hand-rail')).toBeNull();
   });
 
+  it('draws the card text in your hand', async () => {
+    const card = makeCard(handLocationOf('me'));
+    card.faceText = '手札の文章';
+    TestBed.inject(HandRailService).open();
+
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(fixture.nativeElement.querySelector('card-face-preview')).toBeTruthy();
+  });
+
   it('puts a card face up back onto the table and out of the hand', () => {
     const card = makeCard(handLocationOf('me'));
 
@@ -110,5 +117,14 @@ describe('HandRailComponent', () => {
     (component as unknown as { playFaceUp: (c: Card) => void }).playFaceUp(card);
 
     expect(selection.focusCoordinate()).toEqual(expect.objectContaining({ x: 120, y: 80 }));
+  });
+
+  it('looks for the card just played where it stands, through the table focus', () => {
+    const card = makeCard(handLocationOf('me'));
+    const focusOn = vi.spyOn(TestBed.inject(TableFocusService), 'focusOn').mockImplementation(() => undefined);
+
+    (component as unknown as { playFaceUp: (c: Card) => void }).playFaceUp(card);
+
+    expect(focusOn).toHaveBeenCalledWith(card);
   });
 });

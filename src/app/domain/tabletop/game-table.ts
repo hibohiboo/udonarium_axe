@@ -2,18 +2,35 @@ import { emitSelectGameTable } from '@axe/core/event/domain-events';
 import { SyncObject, SyncVar } from '@axe/core/sync/decorator';
 import { ObjectNode } from '@axe/core/sync/object-node';
 import { DEFAULT_AMBIENCE_DENSITY } from '@axe/domain/effect/ambience/ambience-kind';
+import { CutInMultiDirectionMode } from '@axe/domain/tabletop/cut-in-multi-direction';
+import { DEFAULT_FOG_COLOR, DEFAULT_FOG_MODE, FogMode } from '@axe/domain/tabletop/fog/fog-mode';
 import { GameTableMask } from '@axe/domain/tabletop/game-table-mask';
-import { GameTableScratchMask } from '@axe/domain/tabletop/game-table-scratch-mask';
+import { GridType } from '@axe/domain/tabletop/grid-type';
+import { HoverDetailPlacement } from '@axe/domain/tabletop/hover-detail-placement';
+import { LightSource } from '@axe/domain/tabletop/light-source';
+import {
+  DEFAULT_CELL_DISTANCE,
+  DEFAULT_CELL_DISTANCE_UNIT,
+  DEFAULT_MOVE_RANGE_ELEMENT_NAMES,
+} from '@axe/domain/tabletop/move/move-cells';
+import { DEFAULT_ZOC_EXTRA_COST, DEFAULT_ZOC_MODE, DEFAULT_ZOC_RANGE } from '@axe/domain/tabletop/move/zone-of-control';
+import { MultiAngleMotionMode } from '@axe/domain/tabletop/multi-angle';
+import { MultiAngleFontScale } from '@axe/domain/tabletop/multi-angle-font-scale';
+import { DEFAULT_CELL_MM } from '@axe/domain/tabletop/physical-scale';
+import { ROOM_RULE_DEFAULTS } from '@axe/domain/tabletop/room-rules';
 import { TableAmbience } from '@axe/domain/tabletop/table-ambience';
+import { TableBackgroundLayer } from '@axe/domain/tabletop/table-background-layer';
+import { DEFAULT_TABLE_FACING_MARK, TableFacingMark } from '@axe/domain/tabletop/table-facing-mark';
+import {
+  DEFAULT_TABLETOP_DISPLAY_SETTINGS as DISPLAY_DEFAULTS,
+  TabletopDisplaySettings,
+} from '@axe/domain/tabletop/tabletop-display';
+import { TabletopMenuStyle } from '@axe/domain/tabletop/tabletop-menu-style';
 import { Terrain } from '@axe/domain/tabletop/terrain';
 import { DEFAULT_AMBIENT_COLOR } from '@axe/domain/tabletop/vision-types';
+import { WhiteBoard } from '@axe/domain/tabletop/white-board';
 
-export enum GridType {
-  NONE = -1,
-  SQUARE = 0,
-  HEX_VERTICAL = 1,
-  HEX_HORIZONTAL = 2,
-}
+export { GridType } from '@axe/domain/tabletop/grid-type';
 
 export enum GridSnapStyle {
   CENTER = 0,
@@ -47,6 +64,33 @@ export class GameTable extends ObjectNode {
   @SyncVar() gridSnapStyle: GridSnapStyle = GridSnapStyle.CENTER;
   @SyncVar() imageBillboard: boolean = false;
   @SyncVar() mode2d: boolean = false;
+  /**
+   * How the flat table is drawn and reached; see {@link TabletopDisplaySettings}.
+   *
+   * The room answers for these now. A table still carries them so that a room saved before the
+   * room was asked keeps looking the way it did.
+   */
+  @SyncVar() orthographicProjection: boolean = DISPLAY_DEFAULTS.orthographicProjection;
+  @SyncVar() pieceImageInCell: boolean = ROOM_RULE_DEFAULTS.pieceImageInCell;
+  @SyncVar() tabletopMenuStyle: TabletopMenuStyle = DISPLAY_DEFAULTS.tabletopMenuStyle;
+  /** What the style was chosen by before it had a name. Read only where no style is written. */
+  @SyncVar() radialMenuEnabled: boolean = false;
+  @SyncVar() radialMenuRotationSpeed: number = DISPLAY_DEFAULTS.radialMenuRotationSpeed;
+  @SyncVar() hoverDetailPlacement: HoverDetailPlacement = DISPLAY_DEFAULTS.hoverDetailPlacement;
+  @SyncVar() multiAngleEnabled: boolean = DISPLAY_DEFAULTS.multiAngleEnabled;
+  @SyncVar() multiAngleResourceBuffEnabled: boolean = DISPLAY_DEFAULTS.multiAngleResourceBuffEnabled;
+  @SyncVar() multiAngleMotionMode: MultiAngleMotionMode = DISPLAY_DEFAULTS.multiAngleMotionMode;
+  @SyncVar() multiAngleRevolutionSeconds: number = DISPLAY_DEFAULTS.multiAngleRevolutionSeconds;
+  @SyncVar() multiAnglePauseSeconds: number = DISPLAY_DEFAULTS.multiAnglePauseSeconds;
+  @SyncVar() multiAnglePieceRevolutionSeconds: number = DISPLAY_DEFAULTS.multiAnglePieceRevolutionSeconds;
+  @SyncVar() multiAngleFontScale: MultiAngleFontScale = DISPLAY_DEFAULTS.multiAngleFontScale;
+  @SyncVar() multiAngleTickerEnabled: boolean = DISPLAY_DEFAULTS.multiAngleTickerEnabled;
+  @SyncVar() multiAngleTickerPixelsPerSecond: number = DISPLAY_DEFAULTS.multiAngleTickerPixelsPerSecond;
+  @SyncVar() cutInMultiDirectionMode: CutInMultiDirectionMode = DISPLAY_DEFAULTS.cutInMultiDirectionMode;
+  /** How a piece shows which way it faces; see {@link TableFacingMark}. */
+  @SyncVar() facingMark: TableFacingMark = DEFAULT_TABLE_FACING_MARK;
+  /** How wide one square is meant to measure on the glass, for a screen laid flat under miniatures. */
+  @SyncVar() cellMm: number = DEFAULT_CELL_MM;
   @SyncVar() wallHeight: number = 10;
   @SyncVar() northWallImageIdentifier: string = 'imageIdentifier';
   @SyncVar() eastWallImageIdentifier: string = 'imageIdentifier';
@@ -62,29 +106,81 @@ export class GameTable extends ObjectNode {
   @SyncVar() ambientColor: string = DEFAULT_AMBIENT_COLOR;
   @SyncVar() globalIllumination: number = 0;
 
+  @SyncVar() fogEnabled: boolean = false;
+  @SyncVar() fogMode: FogMode = DEFAULT_FOG_MODE;
+  @SyncVar() fogColor: string = DEFAULT_FOG_COLOR;
+
+  @SyncVar() moveRangeEnabled: boolean = true;
+  @SyncVar() moveRangeElementNames: string = DEFAULT_MOVE_RANGE_ELEMENT_NAMES;
+  /** Whether a piece on squares may step across a corner. A hex board has none to cut. */
+  @SyncVar() moveDiagonally: boolean = true;
+  /** Whether two pieces may stand on one cell. Left off, a piece walks past rather than onto. */
+  @SyncVar() piecesShareCells: boolean = true;
+  /** Whether the piece a reader has picked keeps showing its reach, not only while carried. */
+  @SyncVar() moveRangeAlways: boolean = false;
+  /** Whether the ground held against the piece a reader has picked keeps showing. */
+  @SyncVar() zocAlways: boolean = false;
+  @SyncVar() cellDistance: number = DEFAULT_CELL_DISTANCE;
+  @SyncVar() cellDistanceUnit: string = DEFAULT_CELL_DISTANCE_UNIT;
+
+  /** What the ground around an enemy does to a piece walking into it. One of ZOC_MODES. */
+  @SyncVar() zocMode: string = DEFAULT_ZOC_MODE;
+  /** How many cells out from an enemy that ground reaches. */
+  @SyncVar() zocRange: number = DEFAULT_ZOC_RANGE;
+  /** What entering it costs on top of the one step, where the table charges for it. */
+  @SyncVar() zocExtraCost: number = DEFAULT_ZOC_EXTRA_COST;
+
   /** The weather over the whole map. Empty for none. */
   @SyncVar() weatherKind: string = '';
   @SyncVar() weatherColor: string = '';
   @SyncVar() weatherDensity: number = DEFAULT_AMBIENCE_DENSITY;
 
+  /** Cut-ins to play when this table is chosen. Several are separated by commas, and one is drawn. */
+  @SyncVar() cutInIdentifiers: string = '';
+
   gridClipRect: { top: number; right: number; bottom: number; left: number } | null = null;
+  /** The terrain pieces on this table. */
   get terrains(): Terrain[] {
     return this.children.filter((o): o is Terrain => o instanceof Terrain);
   }
 
+  /** The light sources placed on this table. */
+  get lightSources(): LightSource[] {
+    return this.children.filter((o): o is LightSource => o instanceof LightSource);
+  }
+
+  /** The boards standing on this table. */
+  get whiteBoards(): WhiteBoard[] {
+    return this.children.filter((o): o is WhiteBoard => o instanceof WhiteBoard);
+  }
+
+  /** The area effects, such as a marsh or a vent in the ground, laid over this table. */
   get ambiences(): TableAmbience[] {
     return this.children.filter((o): o is TableAmbience => o instanceof TableAmbience);
   }
 
+  /**
+   * What drifts under the board, furthest back first.
+   *
+   * A table drawn on a transparent picture shows these through it; one drawn on an opaque one
+   * hides them, and the room pays nothing for layers nobody can see.
+   */
+  get backgroundLayers(): TableBackgroundLayer[] {
+    return this.children
+      .filter((o): o is TableBackgroundLayer => o instanceof TableBackgroundLayer)
+      .sort((a, b) => a.order - b.order);
+  }
+
+  /** The masks covering parts of this table. */
   get masks(): GameTableMask[] {
     return this.children.filter((o): o is GameTableMask => o instanceof GameTableMask);
   }
 
-  get scratchMasks(): GameTableScratchMask[] {
-    return this.children.filter((o): o is GameTableScratchMask => o instanceof GameTableScratchMask);
-  }
-
   // GameObject Lifecycle
+  /**
+   * When the table arrives in the object store already selected, announces it as the table being
+   * viewed.
+   */
   override onStoreAdded() {
     super.onStoreAdded();
     if (this.selected) emitSelectGameTable({ identifier: this.identifier });

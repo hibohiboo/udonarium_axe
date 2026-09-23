@@ -10,6 +10,7 @@
           type="button"
           draggable="true"
           (dragstart)="onStructureDragStart($event)"
+          (contextmenu)="onStructureHandleContextMenu($event)"
           (dragend)="onStructureDragEnd($event)"
           [title]="'feature.dataElement.action.drag' | transloco"
         >
@@ -60,7 +61,10 @@
     >
       <div
         class="elm-value-content grid min-h-[calc(var(--gde-row-min)-8px)] min-w-0 items-center gap-1 self-center [&.gde-editing]:col-start-1 [&.gde-editing]:row-start-1 [&.gde-editing]:max-h-12 [&.gde-editing]:overflow-hidden [&.gde-editing>input:not([type=range]):not([type=checkbox])]:h-6! [&.gde-editing>input:not([type=range]):not([type=checkbox])]:max-h-6 [&.gde-editing>input:not([type=range]):not([type=checkbox])]:min-h-6 [&.gde-editing>input:not([type=range]):not([type=checkbox])]:leading-4.5 [&.gde-editing>input[type=checkbox]]:m-0 [&.gde-editing>input[type=checkbox]]:size-3.5 [&.gde-editing>select]:h-6! [&.gde-editing>select]:max-h-6 [&.gde-editing>select]:min-h-6 [&.gde-editing>select]:leading-4.5 [&.gde-editing>textarea]:h-6! [&.gde-editing>textarea]:max-h-6 [&.gde-editing>textarea]:min-h-6 [&.gde-editing>textarea]:resize-none [&.gde-editing>textarea]:overflow-hidden [&.gde-editing>textarea]:leading-4.5 [&.gde-editing>textarea]:whitespace-nowrap"
-        [class.gde-editing]="isEdit() && !isImage()"
+        [class.gde-editing]="isEdit() && !isImage() && !isLongTextEditing"
+        [class.col-span-full]="isLongTextEditing"
+        [class.row-start-2]="isLongTextEditing"
+        [class.mt-1]="isLongTextEditing"
       >
         @switch (gameDataElement().fieldType) {
           @case ('resource') {
@@ -143,8 +147,12 @@
               />
             </span>
             <textarea
-              class="textarea-url h-[5em] w-full min-w-12.5 resize-none text-[0.8em]"
-              name="data-value"
+              class="textarea-url w-full min-w-12.5"
+              [class]="
+                isLongTextEditing
+                  ? 'elm-long-text-input bg-ui-input! focus:border-ui-accent! field-sizing-content max-h-[calc(30lh+0.5rem+2px)] min-h-[calc(10lh+0.5rem+2px)] resize-y border! border-(--gde-row-border)! px-1.5! py-1! leading-normal whitespace-pre-wrap focus:shadow-[0_0_0_2px_var(--ui-accent-glow)]'
+                  : 'h-[5em] resize-none text-[0.8em]'
+              "
               name="data-value"
               [(ngModel)]="value"
               [readonly]="isValueLocked()"
@@ -241,6 +249,21 @@
                   {{ 'feature.dataElement.imageUnset' | transloco }}
                 </div>
               }
+              @if (isImage()) {
+                <label class="flex min-w-30 flex-1 items-center gap-1.5 text-[0.8em]">
+                  <span class="text-ui-muted shrink-0">{{
+                    'feature.dataElement.portraitNumber' | transloco: { index: indexNum() + 1 }
+                  }}</span>
+                  <input
+                    class="w-full min-w-2.5"
+                    size="1"
+                    name="data-current-value"
+                    [(ngModel)]="currentValue"
+                    [readonly]="isValueLocked()"
+                    [placeholder]="'feature.dataElement.portraitName' | transloco"
+                  />
+                </label>
+              }
               @if (isEdit()) {
                 <button
                   class="portrait-button text-[1em]"
@@ -276,55 +299,7 @@
             </div>
           }
           @case ('rangeShape') {
-            <div class="flex w-full min-w-0 flex-wrap items-center gap-2">
-              @if (rangeShapeThumbnail().hasCells) {
-                <svg
-                  [attr.viewBox]="rangeShapeThumbnail().viewBox"
-                  width="36"
-                  height="36"
-                  class="border-ui-border-panel bg-ui-elevated shrink-0 rounded-sm border"
-                  preserveAspectRatio="xMidYMid meet"
-                >
-                  @for (cell of rangeShapeThumbnail().cells; track $index) {
-                    @if (cell.hexPoints) {
-                      <polygon
-                        [attr.points]="cell.hexPoints"
-                        [attr.fill]="rangeShapeValue().gridColor"
-                        [attr.stroke]="rangeShapeValue().rangeColor"
-                        stroke-width="1"
-                      />
-                    } @else {
-                      <rect
-                        [attr.x]="cell.rectX"
-                        [attr.y]="cell.rectY"
-                        [attr.width]="cell.rectSize"
-                        [attr.height]="cell.rectSize"
-                        [attr.fill]="rangeShapeValue().gridColor"
-                        [attr.stroke]="rangeShapeValue().rangeColor"
-                        stroke-width="1"
-                      />
-                    }
-                  }
-                </svg>
-              }
-              <span class="text-ui-muted truncate text-[0.85em]">{{ rangeShapeSummary() }}</span>
-              <div class="ml-auto flex shrink-0 gap-1">
-                <button
-                  type="button"
-                  class="border-ui-border-panel hover:bg-ui-elevated cursor-pointer rounded-sm border px-2 py-0.5 text-[0.85em]"
-                  (click)="openRangeShapeEditor()"
-                >
-                  {{ 'feature.range.custom.edit' | transloco }}
-                </button>
-                <button
-                  type="button"
-                  class="bg-ui-accent hover:bg-ui-accent-strong text-ui-on-accent cursor-pointer rounded-sm px-2 py-0.5 text-[0.85em]"
-                  (click)="spawnRangeShape()"
-                >
-                  {{ 'feature.range.custom.spawn' | transloco }}
-                </button>
-              </div>
-            </div>
+            <game-data-element-range-shape [element]="gameDataElement()" />
           }
           @case ('effect') {
             <div class="flex w-full min-w-0 flex-wrap items-center gap-2">
@@ -362,47 +337,15 @@
                 placeholder="Value"
               />
             }
-            @if (isImage()) {
-              <div class="table-2">
-                <div class="table-cell-2 sub-image-box">
-                  @if (imageFileUrl()) {
-                    <img
-                      class="sub-image"
-                      [src]="imageFileUrl() | safe: 'resourceUrl'"
-                      [alt]="gameDataElement().value"
-                    />
-                  }
-                </div>
-                <div class="table-cell-2 sub-table">
-                  <span>{{ 'feature.dataElement.portraitNumber' | transloco: { index: indexNum() } }}</span
-                  ><input
-                    class="w-full min-w-2.5"
-                    size="1"
-                    name="data-current-value"
-                    name="data-current-value"
-                    [(ngModel)]="currentValue"
-                    [readonly]="isValueLocked()"
-                    [placeholder]="'feature.dataElement.portraitName' | transloco"
-                  />
-                  <button
-                    class="portrait-button text-[1em]"
-                    [disabled]="isValueLocked()"
-                    (click)="!isValueLocked() && openModal('imageIdentifier', true)"
-                  >
-                    {{ 'feature.dataElement.imageChange' | transloco }}
-                  </button>
-                </div>
-              </div>
-            }
           }
         }
       </div>
       @if (isEdit() && !isImage()) {
         <div
-          class="elm-row-actions pointer-events-auto static z-2 col-start-2 row-start-1 grid w-(--gde-actions-width) min-w-(--gde-actions-width) grid-cols-[74px_repeat(5,20px)] items-center justify-end gap-0.5 self-center rounded-(--gde-radius-line) border border-(--gde-row-border) bg-(--gde-action-bg) p-0.5 opacity-100"
+          class="elm-row-actions pointer-events-auto static z-2 col-start-2 row-start-1 grid w-(--gde-actions-width) min-w-(--gde-actions-width) grid-cols-[var(--gde-select-width)_repeat(5,20px)] items-center justify-end gap-0.5 self-center rounded-(--gde-radius-line) border border-(--gde-row-border) bg-(--gde-action-bg) p-0.5 opacity-100"
         >
           <ng-select
-            class="ud-select min-h-5.5! w-18.5 min-w-18.5 text-[0.68em]! [&_.ng-select-container]:h-5.5! [&_.ng-select-container]:min-h-5.5! [&_.ng-select-container]:items-center [&_.ng-select-container_.ng-arrow-wrapper]:self-center [&_.ng-select-container_.ng-arrow-wrapper]:pb-0"
+            class="ud-select gde-select min-h-5.5! text-[0.68em]! [&_.ng-select-container]:h-5.5! [&_.ng-select-container]:min-h-5.5! [&_.ng-select-container]:items-center [&_.ng-select-container]:rounded-(--gde-radius-control)! [&_.ng-select-container_.ng-arrow-wrapper]:self-center [&_.ng-select-container_.ng-arrow-wrapper]:pb-0"
             [ngModel]="gameDataElement().fieldType"
             [ngModelOptions]="{ standalone: true }"
             [clearable]="false"
@@ -474,10 +417,10 @@
       }
       @if (fieldOptionsOpen() && shouldShowFieldOptions()) {
         <div
-          class="elm-field-options [&_label]:text-ui-muted [&_span]:text-ui-dim [&_input]:bg-ui-input [&_textarea]:bg-ui-input col-span-full mt-1.5 flex flex-wrap gap-x-1.5 gap-y-1 border border-[color-mix(in_srgb,var(--gde-row-border)_75%,transparent)] p-1.5 [background:color-mix(in_srgb,var(--ui-input-bg)_72%,transparent)] [&_input]:w-full [&_input]:min-w-0 [&_input]:rounded-(--gde-radius-control) [&_input]:border [&_input]:border-(--gde-row-border) [&_input[type='checkbox']]:m-0 [&_input[type='checkbox']]:size-3.5! [&_label]:grid [&_label]:min-w-28 [&_label]:items-center [&_label]:gap-1 [&_label]:text-[0.86em] [&_span]:whitespace-nowrap [&_textarea]:min-h-[3.2em] [&_textarea]:w-full [&_textarea]:min-w-0 [&_textarea]:resize-y [&_textarea]:rounded-(--gde-radius-control) [&_textarea]:border [&_textarea]:border-(--gde-row-border)"
+          class="elm-field-options [&_label]:text-ui-muted [&_span]:text-ui-dim [&_input]:bg-ui-input [&_textarea]:bg-ui-input col-span-full mt-1.5 grid grid-cols-2 gap-x-1.5 gap-y-1 border border-[color-mix(in_srgb,var(--gde-row-border)_75%,transparent)] p-1.5 [background:color-mix(in_srgb,var(--ui-input-bg)_72%,transparent)] [&_input]:w-full [&_input]:min-w-0 [&_input]:rounded-(--gde-radius-control) [&_input]:border [&_input]:border-(--gde-row-border) [&_input[type='checkbox']]:m-0 [&_input[type='checkbox']]:size-3.5! [&_label]:grid [&_label]:min-w-0 [&_label]:items-center [&_label]:gap-1 [&_label]:text-[0.86em] [&_span]:whitespace-nowrap [&_textarea]:min-h-[3.2em] [&_textarea]:w-full [&_textarea]:min-w-0 [&_textarea]:resize-y [&_textarea]:rounded-(--gde-radius-control) [&_textarea]:border [&_textarea]:border-(--gde-row-border)"
         >
           @if (gameDataElement().fieldType === 'select') {
-            <label class="flex-[1_1_14rem] grid-cols-[auto_minmax(8rem,1fr)]">
+            <label class="col-span-full grid-cols-[auto_minmax(8rem,1fr)]">
               <span>{{ 'feature.dataElement.field.choices' | transloco }}</span>
               <textarea
                 name="data-choices"
@@ -486,13 +429,34 @@
               ></textarea>
             </label>
           }
+          @if (gameDataElement().fieldType === 'calc') {
+            <label class="col-span-full grid-cols-[auto_minmax(8rem,1fr)]">
+              <span>{{ 'feature.dataElement.field.formula' | transloco }}</span>
+              <textarea
+                name="data-formula"
+                [(ngModel)]="formulaText"
+                [placeholder]="'feature.dataElement.formulaHelp' | transloco"
+              ></textarea>
+            </label>
+          }
           @if (gameDataElement().fieldType === 'number' || gameDataElement().fieldType === 'resource') {
-            <label class="grid-cols-[auto_minmax(3.8rem,1fr)]">
+            <label class="col-span-full grid-cols-[auto_minmax(3.8rem,1fr)]">
               <span>{{ 'feature.dataElement.field.unit' | transloco }}</span>
               <input
                 name="data-unit"
                 [(ngModel)]="unitText"
                 [placeholder]="'feature.dataElement.field.unitPlaceholder' | transloco"
+              />
+            </label>
+          }
+          @if (canShowPieceGauge()) {
+            <label class="col-span-full grid-cols-[auto_auto] justify-start">
+              <span>{{ 'feature.dataElement.field.gaugeInverted' | transloco }}</span>
+              <input
+                type="checkbox"
+                name="data-gauge-inverted"
+                [checked]="isGaugeInverted()"
+                (change)="toggleGaugeInverted()"
               />
             </label>
           }
@@ -513,21 +477,6 @@
                 name="data-max"
                 [(ngModel)]="maxText"
                 [placeholder]="'feature.dataElement.field.anyValuePlaceholder' | transloco"
-              />
-            </label>
-          }
-          @if (canShowPieceGauge()) {
-            <label class="grid-cols-[auto_auto] justify-start">
-              <span>{{ 'feature.dataElement.field.pieceGauge' | transloco }}</span>
-              <input type="checkbox" name="data-piece-gauge" [checked]="isPieceGauge()" (change)="togglePieceGauge()" />
-            </label>
-            <label class="grid-cols-[auto_auto] justify-start">
-              <span>{{ 'feature.dataElement.field.gaugeInverted' | transloco }}</span>
-              <input
-                type="checkbox"
-                name="data-gauge-inverted"
-                [checked]="isGaugeInverted()"
-                (change)="toggleGaugeInverted()"
               />
             </label>
           }
@@ -559,18 +508,49 @@
               <input type="number" name="data-max-correction" [(ngModel)]="maxCorrectionText" placeholder="0" />
             </label>
           }
-          @if (gameDataElement().fieldType === 'calc') {
-            <label class="flex-[1_1_14rem] grid-cols-[auto_minmax(8rem,1fr)]">
-              <span>{{ 'feature.dataElement.field.formula' | transloco }}</span>
-              <textarea
-                name="data-formula"
-                [(ngModel)]="formulaText"
-                [placeholder]="'feature.dataElement.formulaHelp' | transloco"
-              ></textarea>
+          @if (canShowPieceGauge()) {
+            <label class="col-span-full grid-cols-[auto_auto] justify-start">
+              <span>{{ 'feature.dataElement.field.pieceGauge' | transloco }}</span>
+              <input type="checkbox" name="data-piece-gauge" [checked]="isPieceGauge()" (change)="togglePieceGauge()" />
             </label>
           }
-          @if (gameDataElement().fieldType === 'image') {
+          @if (canShowChangeFeedback()) {
             <label class="grid-cols-[auto_auto] justify-start">
+              <span>{{ 'feature.dataElement.field.changeEffect' | transloco }}</span>
+              <input
+                type="checkbox"
+                name="data-change-effect"
+                [checked]="playsEffectOnChange()"
+                (change)="toggleChangeEffect()"
+              />
+            </label>
+            <label class="grid-cols-[auto_auto] justify-start">
+              <span>{{ 'feature.dataElement.field.changeSound' | transloco }}</span>
+              <input
+                type="checkbox"
+                name="data-change-sound"
+                [checked]="playsSoundOnChange()"
+                (change)="toggleChangeSound()"
+              />
+            </label>
+            @if (playsSoundOnChange()) {
+              <label class="col-span-full grid-cols-[auto_minmax(6rem,1fr)]">
+                <span>{{ 'feature.dataElement.field.changeSoundSet' | transloco }}</span>
+                <select
+                  class="border-ui-border-input bg-ui-input text-ui-text w-full min-w-0 rounded-(--gde-radius-control) border px-1 py-0.5"
+                  name="data-change-sound-set"
+                  [ngModel]="soundSetOnChange()"
+                  (ngModelChange)="setSoundSetOnChange($event)"
+                >
+                  @for (option of soundSetOptions; track option.value) {
+                    <option [value]="option.value">{{ option.labelKey | transloco }}</option>
+                  }
+                </select>
+              </label>
+            }
+          }
+          @if (gameDataElement().fieldType === 'image') {
+            <label class="col-span-full grid-cols-[auto_auto] justify-start">
               <span>{{ 'feature.dataElement.field.imagePopupOriginal' | transloco }}</span>
               <input
                 type="checkbox"
@@ -598,7 +578,7 @@
               />
             </label>
             @if (gameDataElement().fieldType === 'check') {
-              <label class="grid-cols-[auto_minmax(3.8rem,1fr)]">
+              <label class="col-span-full grid-cols-[auto_minmax(3.8rem,1fr)]">
                 <span>{{ 'feature.dataElement.field.cellText' | transloco }}</span>
                 <input
                   name="data-cell-text"
@@ -607,7 +587,7 @@
                 />
               </label>
             }
-            <label class="grid-cols-[auto_auto] justify-start">
+            <label class="col-span-full grid-cols-[auto_auto] justify-start">
               <span>{{ 'feature.dataElement.field.gapCell' | transloco }}</span>
               <input type="checkbox" name="data-cell-kind-gap" [(ngModel)]="isGapCell" />
             </label>
@@ -625,6 +605,7 @@
           class="relative z-1 m-0 mb-1 min-w-0 rounded-l-none rounded-r-xs border border-l-[3px] border-(--gde-row-border) border-l-(--gde-accent-border) bg-(--gde-section-bg) px-2 py-1.25 pl-2.5 text-[0.82em] shadow-(--gde-section-shadow)"
           [class.px-2!]="isEdit()"
           [class.py-1.25!]="isEdit()"
+          [class.z-100!]="iconPickerOpen() || templateMenuOpen()"
         >
           @if (!isTagLocked() && isEdit()) {
             <div
@@ -640,6 +621,7 @@
                     type="button"
                     draggable="true"
                     (dragstart)="onStructureDragStart($event)"
+                    (contextmenu)="onStructureHandleContextMenu($event)"
                     (dragend)="onStructureDragEnd($event)"
                     [title]="'feature.dataElement.action.drag' | transloco"
                   >
@@ -753,6 +735,26 @@
               >
                 <i class="material-icons">open_in_new</i>
               </button>
+              @if (canDuplicateElement()) {
+                <button
+                  class="text-ui-muted hover:bg-ui-hover hover:text-ui-text disabled:text-ui-dim inline-flex h-5.5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-(--gde-radius-control) border-none bg-transparent p-0 disabled:cursor-default disabled:bg-transparent disabled:opacity-[0.36] [&_.material-icons]:text-[14px]"
+                  type="button"
+                  (click)="duplicateElement()"
+                  [title]="'feature.dataElement.action.duplicate' | transloco"
+                >
+                  <i class="material-icons">library_add</i>
+                </button>
+              }
+              @if (canSaveAsTemplate()) {
+                <button
+                  class="text-ui-muted hover:bg-ui-hover hover:text-ui-text disabled:text-ui-dim inline-flex h-5.5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-(--gde-radius-control) border-none bg-transparent p-0 disabled:cursor-default disabled:bg-transparent disabled:opacity-[0.36] [&_.material-icons]:text-[14px]"
+                  type="button"
+                  (click)="saveAsTemplate()"
+                  [title]="'feature.dataElement.action.saveTemplate' | transloco"
+                >
+                  <i class="material-icons">bookmark_add</i>
+                </button>
+              }
               @if (isImage()) {
                 <button
                   class="text-ui-muted hover:bg-ui-hover hover:text-ui-text disabled:text-ui-dim inline-flex h-5.5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-(--gde-radius-control) border-none bg-transparent p-0 disabled:cursor-default disabled:bg-transparent disabled:opacity-[0.36] [&_.material-icons]:text-[14px]"
@@ -772,6 +774,46 @@
                   >
                     <i class="material-icons">create_new_folder</i>
                   </button>
+                }
+                @if (elementTemplates().length > 0) {
+                  <div class="relative shrink-0">
+                    <button
+                      class="text-ui-muted hover:bg-ui-hover hover:text-ui-text disabled:text-ui-dim inline-flex h-5.5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-(--gde-radius-control) border-none bg-transparent p-0 disabled:cursor-default disabled:bg-transparent disabled:opacity-[0.36] [&_.material-icons]:text-[14px]"
+                      [class.bg-ui-accent-bg]="templateMenuOpen()"
+                      [class.text-ui-accent!]="templateMenuOpen()"
+                      type="button"
+                      (click)="templateMenuOpen.update((v) => !v)"
+                      [title]="'feature.dataElement.action.addFromTemplate' | transloco"
+                    >
+                      <i class="material-icons">bookmarks</i>
+                    </button>
+                    @if (templateMenuOpen()) {
+                      <div class="fixed inset-0 z-100" (click)="templateMenuOpen.set(false)"></div>
+                      <div
+                        class="elm-template-menu bg-ui-elevated border-ui-border-panel absolute top-[calc(100%+4px)] right-0 z-101 max-h-80 w-48 overflow-y-auto rounded-sm border p-1 shadow-[0_4px_16px_rgba(0,0,0,0.4)]"
+                      >
+                        @for (template of elementTemplates(); track template.identifier) {
+                          <div class="flex items-center gap-0.5">
+                            <button
+                              class="text-ui-text hover:bg-ui-hover min-w-0 flex-1 cursor-pointer truncate rounded-xs border-none bg-transparent px-1.5 py-1 text-left text-[0.85em]"
+                              type="button"
+                              (click)="insertTemplate(template)"
+                            >
+                              {{ template.name }}
+                            </button>
+                            <button
+                              class="text-ui-muted hover:bg-ui-danger-bg hover:text-ui-danger inline-flex h-5.5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-none bg-transparent p-0 [&_.material-icons]:text-[14px]"
+                              type="button"
+                              (click)="deleteTemplate(template, $event)"
+                              [title]="'feature.dataElement.action.deleteTemplate' | transloco"
+                            >
+                              <i class="material-icons">close</i>
+                            </button>
+                          </div>
+                        }
+                      </div>
+                    }
+                  </div>
                 }
                 @if (canAddChildFieldElement()) {
                   <button
@@ -795,9 +837,9 @@
             </div>
             @if (fieldOptionsOpen() && shouldShowContainerOptions()) {
               <div
-                class="elm-field-options [&_label]:text-ui-muted [&_span]:text-ui-dim [&_input]:bg-ui-input [&_textarea]:bg-ui-input col-span-full mt-1.5 flex flex-wrap gap-x-1.5 gap-y-1 border border-[color-mix(in_srgb,var(--gde-row-border)_75%,transparent)] p-1.5 [background:color-mix(in_srgb,var(--ui-input-bg)_72%,transparent)] [&_input]:w-full [&_input]:min-w-0 [&_input]:rounded-(--gde-radius-control) [&_input]:border [&_input]:border-(--gde-row-border) [&_input[type='checkbox']]:m-0 [&_input[type='checkbox']]:size-3.5! [&_label]:grid [&_label]:min-w-28 [&_label]:items-center [&_label]:gap-1 [&_label]:text-[0.86em] [&_span]:whitespace-nowrap [&_textarea]:min-h-[3.2em] [&_textarea]:w-full [&_textarea]:min-w-0 [&_textarea]:resize-y [&_textarea]:rounded-(--gde-radius-control) [&_textarea]:border [&_textarea]:border-(--gde-row-border)"
+                class="elm-field-options [&_label]:text-ui-muted [&_span]:text-ui-dim [&_input]:bg-ui-input [&_textarea]:bg-ui-input col-span-full mt-1.5 grid grid-cols-2 gap-x-1.5 gap-y-1 border border-[color-mix(in_srgb,var(--gde-row-border)_75%,transparent)] p-1.5 [background:color-mix(in_srgb,var(--ui-input-bg)_72%,transparent)] [&_input]:w-full [&_input]:min-w-0 [&_input]:rounded-(--gde-radius-control) [&_input]:border [&_input]:border-(--gde-row-border) [&_input[type='checkbox']]:m-0 [&_input[type='checkbox']]:size-3.5! [&_label]:grid [&_label]:min-w-0 [&_label]:items-center [&_label]:gap-1 [&_label]:text-[0.86em] [&_span]:whitespace-nowrap [&_textarea]:min-h-[3.2em] [&_textarea]:w-full [&_textarea]:min-w-0 [&_textarea]:resize-y [&_textarea]:rounded-(--gde-radius-control) [&_textarea]:border [&_textarea]:border-(--gde-row-border)"
               >
-                <label class="grid-cols-[auto_minmax(3.8rem,1fr)]">
+                <label class="col-span-full grid-cols-[auto_minmax(3.8rem,1fr)]">
                   <span>{{ 'feature.dataElement.field.rowHeader' | transloco }}</span>
                   <input
                     name="data-row-header-label"
@@ -805,7 +847,7 @@
                     [placeholder]="'feature.dataElement.field.rowHeaderPlaceholder' | transloco"
                   />
                 </label>
-                <label class="grid-cols-[auto_auto] justify-start">
+                <label class="col-span-full grid-cols-[auto_auto] justify-start">
                   <span>{{ 'feature.dataElement.field.judgeMode' | transloco }}</span>
                   <input
                     type="checkbox"

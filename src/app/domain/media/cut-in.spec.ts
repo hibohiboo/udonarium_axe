@@ -1,6 +1,10 @@
 import { TestBed } from '@angular/core/testing';
+import { ObjectSerializer } from '@axe/core/sync/object-serializer';
 import { ObjectStore } from '@axe/core/sync/object-store';
-import { CutIn } from '@axe/domain/media/cut-in';
+import { CUT_IN_TITLE_BAR_HEIGHT, CutIn, cutInPanelChrome } from '@axe/domain/media/cut-in';
+import { encodeCutInTracks } from '@axe/domain/media/cut-in-keyframe';
+import { CutInLayer } from '@axe/domain/media/cut-in-layer';
+import { CutInScene } from '@axe/domain/media/cut-in-scene';
 
 describe('CutIn', () => {
   let store: ObjectStore;
@@ -8,15 +12,6 @@ describe('CutIn', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({});
     store = ObjectStore.instance;
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
-  });
-
-  afterEach(() => {
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
   });
 
   describe('the defaults of the synchronised fields', () => {
@@ -73,6 +68,28 @@ describe('CutIn', () => {
 
     it('starts at half volume', () => {
       expect(cutIn.videoVolume).toBe(50);
+    });
+
+    it('starts wearing a frame', () => {
+      expect(cutIn.frameless).toBe(false);
+    });
+  });
+
+  describe('cutInPanelChrome()', () => {
+    let cutIn: CutIn;
+
+    beforeEach(() => {
+      cutIn = new CutIn();
+      cutIn.initialize();
+    });
+
+    it('leaves room for the title bar of a framed cut-in', () => {
+      expect(cutInPanelChrome(cutIn)).toBe(CUT_IN_TITLE_BAR_HEIGHT);
+    });
+
+    it('leaves no room above a frameless one', () => {
+      cutIn.frameless = true;
+      expect(cutInPanelChrome(cutIn)).toBe(0);
     });
   });
 
@@ -257,6 +274,157 @@ describe('CutIn', () => {
     it('returns nothing when it is not there', () => {
       cutIn.videoUrl = 'https://www.youtube.com/watch?v=abc123';
       expect(cutIn.playListId).toBe('');
+    });
+  });
+
+  describe('the scene it carries', () => {
+    function makeCutIn(): CutIn {
+      const cutIn = new CutIn();
+      cutIn.initialize();
+      return cutIn;
+    }
+
+    function giveScene(cutIn: CutIn): CutInScene {
+      const scene = new CutInScene();
+      scene.initialize();
+      scene.cutInIdentifier = cutIn.identifier;
+      return scene;
+    }
+
+    function addLayer(scene: CutInScene, name: string): CutInLayer {
+      const layer = new CutInLayer();
+      layer.initialize();
+      layer.name = name;
+      scene.appendChild(layer);
+      return layer;
+    }
+
+    it('carries none to begin with', () => {
+      const cutIn = makeCutIn();
+
+      expect(cutIn.scene).toBeNull();
+      expect(cutIn.isComposed).toBe(false);
+    });
+
+    it('is composed only once a layer is laid into it', () => {
+      const cutIn = makeCutIn();
+      const scene = giveScene(cutIn);
+
+      expect(cutIn.scene).toBe(scene);
+      expect(cutIn.isComposed).toBe(false);
+
+      addLayer(scene, '立ち絵');
+
+      expect(cutIn.isComposed).toBe(true);
+    });
+
+    it('writes nothing inside itself without one', () => {
+      const cutIn = makeCutIn();
+      cutIn.name = '素の演出';
+
+      const xml = ObjectSerializer.instance.toXml(cutIn);
+
+      expect(xml).toContain('name="素の演出"');
+      expect(xml).toContain('></cut-in>');
+    });
+
+    it('writes the scene and its layers inside itself', () => {
+      const cutIn = makeCutIn();
+      const scene = giveScene(cutIn);
+      scene.durationMs = 2500;
+      addLayer(scene, '立ち絵').tracks = encodeCutInTracks({ x: [{ t: 0, v: -400 }] });
+
+      const xml = ObjectSerializer.instance.toXml(cutIn);
+
+      expect(xml).toContain('<cut-in-scene');
+      expect(xml).toContain('durationMs="2500"');
+      expect(xml).toContain('<cut-in-layer');
+      expect(xml).toContain('name="立ち絵"');
+    });
+
+    it('reads its layers back, in order and still moving', () => {
+      const cutIn = makeCutIn();
+      const scene = giveScene(cutIn);
+      scene.durationMs = 2500;
+      scene.sceneLoop = true;
+      addLayer(scene, '背景');
+      addLayer(scene, '文字').tracks = encodeCutInTracks({ opacity: [{ t: 300, v: 1 }] });
+      const xml = ObjectSerializer.instance.toXml(cutIn);
+      store.clearDeleteHistory();
+      const restored = ObjectSerializer.instance.parseXml(xml) as CutIn;
+
+      expect(restored.isComposed).toBe(true);
+      expect(restored.scene?.durationMs).toBe(2500);
+      expect(restored.scene?.sceneLoop).toBe(true);
+      expect(restored.scene?.layers.map((layer) => layer.name)).toEqual(['背景', '文字']);
+      expect(restored.scene?.layers[1].trackSet.opacity).toEqual([{ t: 300, v: 1 }]);
+    });
+
+    it('binds the scene it reads to itself rather than to where it came from', () => {
+      const cutIn = makeCutIn();
+      giveScene(cutIn);
+      const xml = ObjectSerializer.instance.toXml(cutIn);
+
+      const copy = ObjectSerializer.instance.parseXml(xml) as CutIn;
+
+      expect(copy.identifier).not.toBe(cutIn.identifier);
+      expect(copy.scene?.cutInIdentifier).toBe(copy.identifier);
+      expect(cutIn.scene?.cutInIdentifier).toBe(cutIn.identifier);
+    });
+
+    it('writes its identifier, so the tables that play it can find it again', () => {
+      const cutIn = makeCutIn();
+
+      expect(cutIn.toXml()).toContain(`identifier="${cutIn.identifier}"`);
+    });
+
+    it('comes back under the identifier it was saved with when a room is loaded in its place', () => {
+      const cutIn = makeCutIn();
+      const scene = giveScene(cutIn);
+      addLayer(scene, '立ち絵');
+      const identifier = cutIn.identifier;
+      const xml = cutIn.toXml();
+      cutIn.destroy();
+      store.forgetDeleted([identifier]);
+
+      const restored = ObjectSerializer.instance.parseXml(xml) as CutIn;
+
+      expect(restored.identifier).toBe(identifier);
+      expect(store.get(identifier)).toBe(restored);
+      expect(restored.scene?.cutInIdentifier).toBe(identifier);
+      expect(restored.scene?.layers).toHaveLength(1);
+    });
+
+    it('reads a cut-in written before layers existed', () => {
+      const restored = ObjectSerializer.instance.parseXml(
+        '<cut-in name="古い演出" width="640" height="360" isLoop="true" outTime="5"></cut-in>'
+      ) as CutIn;
+
+      expect(restored.name).toBe('古い演出');
+      expect(restored.width).toBe(640);
+      expect(restored.isLoop).toBe(true);
+      expect(restored.outTime).toBe(5);
+      expect(restored.isComposed).toBe(false);
+    });
+
+    it('takes the scene with it when it is destroyed', () => {
+      const cutIn = makeCutIn();
+      const scene = giveScene(cutIn);
+      const layer = addLayer(scene, '立ち絵');
+
+      cutIn.destroy();
+
+      expect(store.get(scene.identifier)).toBeNull();
+      expect(store.get(layer.identifier)).toBeNull();
+    });
+
+    it('takes it with it when the deletion came from elsewhere', () => {
+      const cutIn = makeCutIn();
+      const scene = giveScene(cutIn);
+
+      store.delete(cutIn);
+
+      expect(store.get(scene.identifier)).toBeNull();
     });
   });
 });

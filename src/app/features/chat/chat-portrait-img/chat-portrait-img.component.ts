@@ -12,9 +12,9 @@ import {
   viewChild,
 } from '@angular/core';
 import { ChatMessageService } from '@axe/application/chat/chat-message.service';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { PanelService } from '@axe/application/ui/panel.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { ImageStorage } from '@axe/core/storage/image-storage';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { ChatTab } from '@axe/domain/chat/chat-tab';
@@ -74,20 +74,27 @@ export class ChatPortraitImageComponent {
 
   private readonly fileVer = computed(() => this.objectChange.fileVersion());
 
+  /** The chat tab whose portraits are shown, looked up from the bound identifier. */
   get chatTab(): ChatTab {
     this.version();
     return this.objectStore.get<ChatTab>(this.chatTabidentifier())!;
   }
 
+  /** The room's chat tab list, which holds the portrait settings every tab shares. */
   get chatTabList(): ChatTabList {
     return this.objectStore.get<ChatTabList>('ChatTabList')!;
   }
 
+  readonly isPortraitInWindow = computed<boolean>(() => {
+    this.chatTabListVersion();
+    return this.chatTabList?.isPortraitInWindow === true;
+  });
+
   readonly portraitYPos = computed<number>(() => {
     this.chatTabListVersion();
     const h = this.chatTabList?.portraitHeight ?? 0;
-    if (!this.chatTabList?.isPortraitInWindow) return -h - 28;
-    return -h;
+    if (!this.isPortraitInWindow()) return -h - 28;
+    return 0;
   });
 
   readonly isPortraitDispMode = computed<boolean>(() => {
@@ -127,6 +134,18 @@ export class ChatPortraitImageComponent {
     return slots;
   });
 
+  readonly bandHeight = computed<number>(() => {
+    if (!this.isPortraitInWindow() || this.vnMode.active()) return 0;
+    if (!this.chatTab?.portraitDisplayFlag || !this.isPortraitDispMode()) return 0;
+    return this.portraitSlots().some((slot) => slot.imageFileUrl && 0 < slot.height)
+      ? (this.chatTabList?.portraitHeight ?? 0)
+      : 0;
+  });
+
+  /**
+   * Hides the portrait standing at this position when the user presses on it; the flag is kept on
+   * the chat tab itself.
+   */
   portraitClick(pos: number): void {
     this.chatTab.hidePortraitPos(pos);
   }

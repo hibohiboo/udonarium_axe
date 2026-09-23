@@ -13,25 +13,24 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { GameObjectInventoryService } from '@axe/application/inventory/game-object-inventory.service';
 import { DisclosureService } from '@axe/application/permission/disclosure.service';
 import { RolePermissionService } from '@axe/application/permission/role-permission.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
-import { ContextMenuSeparator, ContextMenuService } from '@axe/application/ui/context-menu.service';
-import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
+import { VisionService } from '@axe/application/tabletop/vision.service';
+import { ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { PieceContextMenuService } from '@axe/application/ui/piece-context-menu.service';
-import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
-import { sheetPanelBox } from '@axe/application/ui/sheet-panel';
 import { sheetPanelTitle } from '@axe/application/ui/sheet-panel';
 import { buildSurfaceSwitchContextMenu } from '@axe/application/ui/surface-switch-context-menu';
 import { UiSignalService } from '@axe/application/ui/ui-signal.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { DataElement } from '@axe/domain/data/data-element';
 import { PresetSound, SoundEffect } from '@axe/domain/media/sound-effect';
-import { PeerCursor } from '@axe/domain/peer/peer-cursor';
+import { multiAngleFontScaleFactor } from '@axe/domain/tabletop/multi-angle-font-scale';
 import { TextNote } from '@axe/domain/tabletop/text-note';
-import { buildTextNoteContextMenu } from '@axe/features/tabletop/text-note/text-note-context-menu';
+import { ObjectPanelService } from '@axe/features/panels/object-panel.service';
+import { buildTextNoteContextMenuModel } from '@axe/features/tabletop/text-note/text-note-context-menu';
 import { MovableOption } from '@axe/ui/directives/movable.directive';
 import { MovableDirective } from '@axe/ui/directives/movable.directive';
 import { RotableOption } from '@axe/ui/directives/rotable.directive';
@@ -49,6 +48,7 @@ import { decorateChatStyleText } from '@axe/ui/text-decoration/decorate-chat-tex
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [MovableDirective, RotableDirective, SelectableDirective, NgStyle, FormsModule, LinkifyPipe, SafePipe],
   host: {
+    '[style.display]': "isHiddenByFog() ? 'none' : null",
     class: 'block',
     '(dragstart)': 'onDragstart($event)',
     '(mousedown)': 'onMouseDown($event)',
@@ -65,19 +65,26 @@ export class TextNoteComponent {
     const note = this.textNote();
     if (!note) return false;
     this.objectChange.versionOf(note.identifier)();
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     return this.disclosureService.canView(note);
   });
   private readonly elementRef = inject<ElementRef<HTMLElement>>(ElementRef);
-  private readonly panelService = inject(PanelService);
+  private readonly objectPanels = inject(ObjectPanelService);
   private readonly pointerDeviceService = inject(PointerDeviceService);
-  private readonly selectionSignalService = inject(SelectionSignalService);
   private readonly inventoryService = inject(GameObjectInventoryService);
   private readonly uiSignalService = inject(UiSignalService);
   private readonly objectChange = inject(ObjectChangeService);
+  private readonly visionService = inject(VisionService);
   protected readonly tabletopService = inject(TabletopService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly translateFn = inject(TRANSLATE_FN);
+
+  readonly isHiddenByFog = computed(() => {
+    const piece = this.textNote();
+    if (!piece) return false;
+    this.objectChange.versionOf(piece.identifier)();
+    return this.visionService.isPieceHiddenByFog(piece, 1);
+  });
 
   constructor() {
     effect(() => {
@@ -131,6 +138,12 @@ export class TextNoteComponent {
   });
   readonly maskedTitle = computed(() => this.title().replace(/\S/g, '█'));
 
+  /**
+   * Switches the note into editing and puts the caret at the end of its text.
+   *
+   * Does nothing for a user who cannot edit the tabletop, on a locked note, or when the note is
+   * already being edited.
+   */
   enterEdit() {
     if (!this.rolePermission.canEditTabletop) return;
     if (this.textNote().isLock) return;
@@ -145,6 +158,7 @@ export class TextNoteComponent {
     });
   }
 
+  /** Leaves editing when the text area loses focus. */
   onTextAreaBlur() {
     this.isEditing.set(false);
   }
@@ -172,6 +186,10 @@ export class TextNoteComponent {
     return v;
   });
 
+  /**
+   * Whether the note is locked, which keeps it from being moved or edited; setting it writes
+   * straight to the note.
+   */
   get isLock(): boolean {
     return this.textNote().isLock;
   }
@@ -183,6 +201,12 @@ export class TextNoteComponent {
   private readonly _fontSize = signal(9);
   private textUpdateTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * The note's text as held by the text area.
+   *
+   * Setting it shows the change at once and writes it to the note after 66 ms without another
+   * change, then refits the text area's height.
+   */
   get text(): string {
     return this._text();
   }
@@ -190,6 +214,7 @@ export class TextNoteComponent {
     this._text.set(text);
     this.setTextUpdateTimer();
   }
+  /** The note's font size setting; the text is drawn at this many pixels plus 9. */
   get fontSize(): number {
     return this._fontSize();
   }
@@ -210,19 +235,23 @@ export class TextNoteComponent {
     this.objectChange.versionOf(textNote.identifier)();
     return textNote.imageFile;
   });
+  /** The note's rotation in degrees; setting it writes straight to the note. */
   get rotate(): number {
     return this.textNote().rotate;
   }
   set rotate(rotate: number) {
     this.textNote().rotate = rotate;
   }
+  /** The note's height in cells, never negative. */
   get height(): number {
     return Math.max(0, this.textNote().height);
   }
+  /** The note's width in cells, never negative. */
   get width(): number {
     return Math.max(0, this.textNote().width);
   }
 
+  /** How high the note floats above the table, in cells; setting it writes straight to the note. */
   get altitude(): number {
     return this.textNote().altitude;
   }
@@ -230,6 +259,12 @@ export class TextNoteComponent {
     this.textNote().altitude = altitude;
   }
 
+  /**
+   * The altitude shown on the altitude label, rounded to one decimal place.
+   *
+   * A standing note sunk under the table is measured from its top edge, and reads 0 while any of it
+   * still shows above.
+   */
   get textNoteAltitude(): number {
     let ret = this.altitude;
     if (this.isUpright && this.altitude < 0) {
@@ -239,6 +274,10 @@ export class TextNoteComponent {
     return +ret.toFixed(1);
   }
 
+  /**
+   * Whether the note stands up rather than lying flat on the table; setting it writes straight to
+   * the note.
+   */
   get isUpright(): boolean {
     return this.textNote().isUpright;
   }
@@ -246,6 +285,10 @@ export class TextNoteComponent {
     this.textNote().isUpright = isUpright;
   }
 
+  /**
+   * Whether the note shows a line and label for its altitude; setting it writes straight to the
+   * note.
+   */
   get isAltitudeIndicate(): boolean {
     return this.textNote().isAltitudeIndicate;
   }
@@ -253,12 +296,16 @@ export class TextNoteComponent {
     this.textNote().isAltitudeIndicate = isAltitudeIndicate;
   }
 
+  /**
+   * Whether the note is being edited, which keeps it from being dragged and its menu from opening.
+   */
   get isSelected(): boolean {
     return this.isEditing();
   }
 
   private callbackOnMouseUp = (e: MouseEvent) => this.onMouseUp(e);
 
+  /** The size of one table cell, in pixels. */
   get gridSize(): number {
     return this.tabletopService.gridSize();
   }
@@ -266,6 +313,11 @@ export class TextNoteComponent {
 
   private _transitionTimeout: ReturnType<typeof setTimeout> | null = null;
   private readonly _transition = signal(false);
+  /**
+   * Whether the note animates as it stands up or lies down.
+   *
+   * Setting it true runs the animation for 132 ms and then turns it off again.
+   */
   get transition(): boolean {
     return this._transition();
   }
@@ -283,6 +335,11 @@ export class TextNoteComponent {
   }
   private _fallTimeout: ReturnType<typeof setTimeout> | null = null;
   private readonly _fall = signal(false);
+  /**
+   * Whether the note animates a drop with a slight bounce.
+   *
+   * Setting it true runs the animation for 132 ms and then turns it off again.
+   */
   get fall(): boolean {
     return this._fall();
   }
@@ -312,13 +369,19 @@ export class TextNoteComponent {
   private get input() {
     return this.inputRef.current;
   }
-  readonly viewRotateZ = computed(() => this.uiSignalService.tableViewRotation()?.z ?? 10);
+  readonly viewRotateZ = this.uiSignalService.tableViewRotationZ;
 
+  /** Stops the browser starting a native drag on the note. */
   onDragstart(e: DragEvent) {
     e.stopPropagation();
     e.preventDefault();
   }
 
+  /**
+   * Brings the note to the top when it is pressed, and waits for the release to start editing.
+   *
+   * Ignored while the note is being edited. A right press only brings the note to the top.
+   */
   onMouseDown(e: MouseEvent) {
     if (this.isSelected) return;
     e.preventDefault();
@@ -328,6 +391,10 @@ export class TextNoteComponent {
     this.addMouseEventListeners();
   }
 
+  /**
+   * Starts editing when a press on the note is let go without the pointer having moved, clearing
+   * any text selection first.
+   */
   onMouseUp(e: MouseEvent) {
     if (this.pointerDeviceService.isAllowedToOpenContextMenu) {
       const selection = window.getSelection();
@@ -339,15 +406,24 @@ export class TextNoteComponent {
     e.preventDefault();
   }
 
+  /** Keeps a press on a rotate handle from bringing the note to the top or starting an edit. */
   onRotateMouseDown(e: MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
   }
 
+  /** Cancels the input handler's gesture as soon as a press starts. */
   onInputStart(_e: Event) {
     this.input!.cancel();
   }
 
+  /**
+   * Opens the note's right-click menu, or the menu for the whole selection when the note is part of
+   * one.
+   *
+   * While the note is being edited the browser's own menu is left to the text area. In the flat
+   * view with a radial menu style chosen, it opens as a radial menu.
+   */
   onContextMenu(e: MouseEvent) {
     this.removeMouseEventListeners();
     if (this.isSelected) return;
@@ -357,7 +433,12 @@ export class TextNoteComponent {
     if (!this.pointerDeviceService.isAllowedToOpenContextMenu) return;
     const position = this.pointerDeviceService.pointers[0];
     if (this.pieceContextMenu.openForSelection(this.textNote(), this.gridSize, position)) return;
-    const baseMenu = buildTextNoteContextMenu(
+    const surfaceEntries = buildSurfaceSwitchContextMenu(
+      this.textNote(),
+      this.tabletopService.currentTable,
+      this.translateFn
+    );
+    const menu = buildTextNoteContextMenuModel(
       this.textNote(),
       this.gridSize,
       this.inventoryService,
@@ -368,28 +449,36 @@ export class TextNoteComponent {
         },
         onShowDetail: () => this.showDetail(this.textNote()),
       },
-      this.translateFn
+      this.translateFn,
+      surfaceEntries
     );
-    const surfaceEntries = buildSurfaceSwitchContextMenu(
-      this.textNote(),
-      this.tabletopService.currentTable,
-      this.translateFn
-    );
-    this.contextMenuService.open(
-      position,
-      surfaceEntries.length > 0 ? [...baseMenu, ContextMenuSeparator, ...surfaceEntries] : baseMenu,
-      this.title()
-    );
+    const display = this.tabletopService.display();
+    if (this.tabletopService.mode2d() && display.tabletopMenuStyle !== 'standard') {
+      this.contextMenuService.openRadial(
+        position,
+        menu.actions,
+        menu.radialGroups,
+        this.title(),
+        display.tabletopMenuStyle === 'radial',
+        display.radialMenuRotationSpeed,
+        multiAngleFontScaleFactor(display.multiAngleFontScale)
+      );
+      return;
+    }
+    this.contextMenuService.open(position, menu.actions, this.title());
   }
 
+  /** Plays the pick-up sound when a drag or turn of the note starts. */
   onMove() {
     SoundEffect.play(PresetSound.cardPick);
   }
 
+  /** Plays the put-down sound when a drag or turn of the note ends. */
   onMoved() {
     SoundEffect.play(PresetSound.cardPut);
   }
 
+  /** Refits the text area's height on the next task, gathering repeated requests into one. */
   calcFitHeightIfNeeded() {
     if (this.calcFitHeightTimer) return;
     this.calcFitHeightTimer = setTimeout(() => {
@@ -401,6 +490,12 @@ export class TextNoteComponent {
   oldScrollHeight = 0;
   oldOffsetHeight = 0;
 
+  /**
+   * Sizes the text area to its content when the note limits its height, up to the note's height
+   * less its title bar.
+   *
+   * Otherwise the height is left to the stylesheet, which fills the note.
+   */
   calcFitHeight() {
     const textArea: HTMLTextAreaElement | undefined = this.textAreaElementRef()?.nativeElement;
     if (!textArea) return;
@@ -434,20 +529,7 @@ export class TextNoteComponent {
 
   private showDetail(gameObject: TextNote) {
     if (!this.disclosureService.canView(gameObject)) return;
-    this.selectionSignalService.selectObject(gameObject.identifier, gameObject.aliasName);
-    const coordinate = this.pointerDeviceService.pointers[0];
     const title = sheetPanelTitle(this.translateFn('feature.tabletop.panel.textNote'), gameObject.title);
-    const option: PanelOption = {
-      title: title,
-      ...sheetPanelBox(coordinate, 700, 400),
-    };
-    this.panelService.openLazy(
-      () =>
-        import('@axe/features/character/game-character-sheet/game-character-sheet.component').then(
-          (m) => m.GameCharacterSheetComponent
-        ),
-      option,
-      (component) => (component.tabletopObject = gameObject)
-    );
+    this.objectPanels.openSheet(gameObject, title, { width: 700, height: 400 });
   }
 }

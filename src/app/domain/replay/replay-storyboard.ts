@@ -1,4 +1,5 @@
 import type { ReplayCastMember } from '@axe/domain/replay/replay-cast';
+import type { ReplayCutInScene } from '@axe/domain/replay/replay-cut-in-scene';
 import {
   canViewReplayEvent,
   isIncidentalReplayEvent,
@@ -6,6 +7,7 @@ import {
   ReplayEventKind,
   type ReplayViewer,
 } from '@axe/domain/replay/replay-event';
+import { ReplayEventCategory, replayEventCategory } from '@axe/domain/replay/replay-event-category';
 import { buildReplayRoute, type ReplayRoutePoint, toRoutePoint } from '@axe/domain/replay/replay-route';
 
 export const ReplayShotPacing = {
@@ -35,6 +37,8 @@ export interface ReplayStoryboardOptions {
   caption?: ReplayShotCaption;
   /** Looks the picture of a cut-in up, from its identifier to the picture's own. */
   cutInImage?: (identifier: string) => string;
+  /** Looks up the layers a cut-in was built from, for one that is not a single picture. */
+  cutInScene?: (identifier: string) => ReplayCutInScene | null;
 }
 
 export const DEFAULT_REPLAY_STORYBOARD_OPTIONS: ReplayStoryboardOptions = {
@@ -60,6 +64,8 @@ export interface ReplayShot {
   backgroundId: string;
   /** The picture of the cut-in showing. Empty for none. */
   cutInId: string;
+  /** The layers the cut-in showing was built from, for one that has them. */
+  cutInScene: ReplayCutInScene | null;
   text: string;
   isNarration: boolean;
   move: ReplayShotMove | null;
@@ -95,6 +101,14 @@ const NARRATED_KINDS: ReadonlySet<ReplayEventKind> = new Set([
 
 export type ReplayShotCaption = (event: ReplayEvent) => string;
 
+/**
+ * Lays a recording out as the shots of a video, one after another.
+ *
+ * Markers open chapters, chat and dice lines become shots, and with the wider scope other events
+ * are narrated through the caption. A long line is split over several shots, each lasting as the
+ * pacing says. A visual novel scene sets the background for what follows. Events the viewer may
+ * not see are skipped; every other event's start time is kept by its sequence number.
+ */
 export function buildReplayStoryboard(
   events: readonly ReplayEvent[],
   cast: readonly ReplayCastMember[],
@@ -112,6 +126,8 @@ export function buildReplayStoryboard(
     const event = events[index];
     if (options.viewer && !canViewReplayEvent(event, options.viewer)) continue;
     timeOfSeq.set(event.seq, startMs);
+    const category = replayEventCategory(event);
+    if (category === ReplayEventCategory.Hidden || category === ReplayEventCategory.System) continue;
 
     if (event.kind === ReplayEventKind.VnScene) {
       background = event.targetId ?? '';
@@ -144,6 +160,7 @@ export function buildReplayStoryboard(
         portraitId: portraitOf(event, speaker, portraits),
         backgroundId: background,
         cutInId: cutInOf(event, options.cutInImage),
+        cutInScene: cutInSceneOf(event, options.cutInScene),
         text: piece,
         isNarration: isChapter || speaker.length < 1,
         move: part === 0 ? moveOf(event) : null,
@@ -155,6 +172,12 @@ export function buildReplayStoryboard(
   return { shots, totalMs: startMs, timeOfSeq };
 }
 
+/**
+ * The shot on screen at a moment of the storyboard.
+ *
+ * A moment before the start gives the first shot. Null when there are no shots or the moment is
+ * past the end of the last.
+ */
 export function shotAt(storyboard: ReplayStoryboard, atMs: number): ReplayShot | null {
   const { shots } = storyboard;
   if (shots.length < 1) return null;
@@ -202,9 +225,22 @@ function durationOf(
 
 /** The picture of a scene a cut-in appeared in. A sound-only cut-in and a video one have none. */
 function cutInOf(event: ReplayEvent, resolve: ((identifier: string) => string) | undefined): string {
-  if (event.kind !== ReplayEventKind.MediaCutIn || !resolve) return '';
-  if (event.detail['isStart'] !== true || event.detail['soundOnly'] === true) return '';
+  if (!showsCutIn(event) || !resolve) return '';
   return resolve(event.targetId ?? '');
+}
+
+/** The layers a cut-in was built from, for one that shows rather than only sounds. */
+function cutInSceneOf(
+  event: ReplayEvent,
+  resolve: ((identifier: string) => ReplayCutInScene | null) | undefined
+): ReplayCutInScene | null {
+  if (!showsCutIn(event) || !resolve) return null;
+  return resolve(event.targetId ?? '');
+}
+
+function showsCutIn(event: ReplayEvent): boolean {
+  if (event.kind !== ReplayEventKind.MediaCutIn) return false;
+  return event.detail['isStart'] === true && event.detail['soundOnly'] !== true;
 }
 
 function splitLongText(text: string): string[] {

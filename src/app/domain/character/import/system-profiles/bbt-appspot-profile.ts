@@ -1,17 +1,14 @@
 import {
   asString,
-  classifyScalar,
   createEmptyImportedCharacter,
   ImportedCharacter,
-  ImportedField,
-  ImportedGroup,
   ImportedParam,
   ImportedSection,
   ImportedStatus,
-  isNonEmptyScalar,
   profileSectionOf,
   toFiniteNumber,
 } from '@axe/domain/character/import/imported-character';
+import { labeledSection } from '@axe/domain/character/import/system-profiles/labeled-section';
 
 interface FieldLabel {
   key: string;
@@ -80,10 +77,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
 function resolveRoot(record: Record<string, unknown>): Record<string, unknown> {
   if (asRecord(record['base']) != null || asRecord(record['baseAbility']) != null) return record;
   return asRecord(record['data']) ?? record;
@@ -94,6 +87,10 @@ function totalOf(container: Record<string, unknown>, key: string): string {
   return entry ? asString(entry['total']) : '';
 }
 
+/**
+ * Whether the pasted json is a warehouse character whose base abilities include `divine` and
+ * `emotion`, which marks the `bbt` system, bare or wrapped in `data`.
+ */
 export function isBbtAppspotCharacter(parsed: unknown): boolean {
   const record = asRecord(parsed);
   if (!record) return false;
@@ -102,25 +99,13 @@ export function isBbtAppspotCharacter(parsed: unknown): boolean {
   return ability != null && 'divine' in ability && 'emotion' in ability;
 }
 
-function labeledSection(label: string, array: unknown, fieldLabels: FieldLabel[]): ImportedSection | null {
-  const groups: ImportedGroup[] = [];
-  asArray(array).forEach((element, index) => {
-    const record = asRecord(element);
-    if (!record) return;
-    const name = asString(record['name']).trim();
-    const fields: ImportedField[] = [];
-    for (const field of fieldLabels) {
-      const raw = record[field.key];
-      if (!isNonEmptyScalar(raw)) continue;
-      const classified = classifyScalar(raw);
-      fields.push({ label: field.label, value: classified.value, kind: classified.kind });
-    }
-    if (name === '' && fields.length === 0) return;
-    groups.push({ label: name === '' ? `${label} ${index + 1}` : name, fields });
-  });
-  return groups.length > 0 ? { label, groups } : null;
-}
-
+/**
+ * Builds the imported model from a `bbt` warehouse character, or null for any other data.
+ *
+ * Ability totals and FP become parameters and humanity a resource; effects, weapons, armour, bonds,
+ * items, the profile and the outline become sections; and the palette offers a 2D6 roll for each
+ * ability.
+ */
 export function buildBbtAppspotCharacter(parsed: unknown): ImportedCharacter | null {
   if (!isBbtAppspotCharacter(parsed)) return null;
   const root = resolveRoot(asRecord(parsed)!);

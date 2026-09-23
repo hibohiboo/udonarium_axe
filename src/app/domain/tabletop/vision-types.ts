@@ -27,6 +27,10 @@ export enum LightPreset {
   FLASHLIGHT = 'flashlight',
   NEON = 'neon',
   SPOTLIGHT = 'spotlight',
+  CAMPFIRE = 'campfire',
+  SCONCE = 'sconce',
+  BRAZIER = 'brazier',
+  CHANDELIER = 'chandelier',
 }
 
 export interface LightSpec {
@@ -63,6 +67,55 @@ export interface LightPresetDef {
 }
 
 export const LIGHT_PRESETS: Record<Exclude<LightPreset, LightPreset.CUSTOM>, LightPresetDef> = {
+  [LightPreset.CAMPFIRE]: {
+    brightRadius: 5,
+    dimRadius: 11,
+    color: '#ff9d4d',
+    angle: 360,
+    pitch: 0,
+    animation: LightAnimation.FLICKER,
+    category: LightCategory.PHYSICAL,
+    ignoreOcclusion: false,
+    revealToAll: false,
+    castShadows: true,
+  },
+  // A torch in a bracket throws its light out from the wall rather than all round it.
+  [LightPreset.SCONCE]: {
+    brightRadius: 3,
+    dimRadius: 7,
+    color: '#ffb36b',
+    angle: 200,
+    pitch: 8,
+    animation: LightAnimation.FLICKER,
+    category: LightCategory.PHYSICAL,
+    ignoreOcclusion: false,
+    revealToAll: false,
+    castShadows: true,
+  },
+  [LightPreset.BRAZIER]: {
+    brightRadius: 4,
+    dimRadius: 9,
+    color: '#ffa347',
+    angle: 360,
+    pitch: 0,
+    animation: LightAnimation.FLICKER,
+    category: LightCategory.PHYSICAL,
+    ignoreOcclusion: false,
+    revealToAll: false,
+    castShadows: true,
+  },
+  [LightPreset.CHANDELIER]: {
+    brightRadius: 6,
+    dimRadius: 12,
+    color: '#ffe0b0',
+    angle: 360,
+    pitch: -20,
+    animation: LightAnimation.FLICKER,
+    category: LightCategory.PHYSICAL,
+    ignoreOcclusion: false,
+    revealToAll: false,
+    castShadows: true,
+  },
   [LightPreset.TORCH]: {
     brightRadius: 4,
     dimRadius: 8,
@@ -149,6 +202,10 @@ export const LIGHT_PRESETS: Record<Exclude<LightPreset, LightPreset.CUSTOM>, Lig
   },
 };
 
+/**
+ * A complete light spec for a preset: the defaults, then the preset's own values, then any
+ * overrides. The preset named is always kept.
+ */
 export function lightSpecFromPreset(preset: LightPreset, overrides: Partial<LightSpec> = {}): LightSpec {
   const base: LightSpec = {
     enabled: true,
@@ -186,6 +243,15 @@ export interface LightConfig {
   visionType?: string;
   visionRange?: number;
   castsShadow?: boolean;
+  visionShape?: string;
+  visionConeAngle?: number;
+  visionConeCount?: number;
+  visionBackAngle?: number;
+  visionBackScale?: number;
+  visionPeripheralScale?: number;
+  visionDirection?: number;
+  visionLobes?: string;
+  showVisionRange?: boolean;
 }
 
 export interface MutableLightFields {
@@ -202,6 +268,11 @@ export interface MutableLightFields {
   lightCastShadows?: boolean;
 }
 
+/**
+ * Sets a light's preset and, for every preset but custom, copies that preset's values onto it.
+ *
+ * Optional fields are written only when the light has them.
+ */
 export function applyLightPreset(target: MutableLightFields, preset: LightPreset): void {
   target.lightPreset = preset;
   if (preset === LightPreset.CUSTOM) return;

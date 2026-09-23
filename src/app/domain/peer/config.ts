@@ -3,13 +3,69 @@ import { ObjectContext } from '@axe/core/sync/game-object';
 import { ObjectNode } from '@axe/core/sync/object-node';
 import { InnerXml } from '@axe/core/sync/object-serializer';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import {
+  ControllerResourcePick,
+  readControllerResourcePick,
+  writeControllerResourcePick,
+} from '@axe/domain/character/controller-resource-pick';
 import { Jukebox } from '@axe/domain/media/jukebox';
+import { allowsDiagonal, asDiagonalMove, DiagonalMove } from '@axe/domain/tabletop/move/diagonal-move';
+import {
+  readRuleFlag,
+  readRuleNumber,
+  readRuleText,
+  RoomRuleAnswers,
+  writeRuleFlag,
+  writeRuleNumber,
+  writeRuleText,
+} from '@axe/domain/tabletop/room-rules';
+import {
+  asFactionPhaseMode,
+  asTurnOrderMode,
+  FactionPhaseMode,
+  TurnOrderMode,
+} from '@axe/domain/tabletop/turn-order-mode';
 
 @SyncObject('config')
 export class Config extends ObjectNode implements InnerXml {
   @SyncVar('_defaultDiceBot') private _defaultDiceBot: string = 'DiceBot';
   @SyncVar('_roomVolume') private _roomVolume: number = 1.0;
+  @SyncVar('_systemAvatarIdentifier') private _systemAvatarIdentifier: string = '';
+  @SyncVar('_systemDiceAvatarIdentifier') private _systemDiceAvatarIdentifier: string = '';
+  @SyncVar('_hideSystemAvatar') private _hideSystemAvatar: string = '';
+  @SyncVar('_showSpeakerAvatar') private _showSpeakerAvatar: string = '';
+  @SyncVar('_controllerResources') private _controllerResources: string = '';
 
+  // How the round is taken, which is the room's own decision rather than a table's.
+  @SyncVar('_turnOrderMode') private _turnOrderMode: string = '';
+  @SyncVar('_factionPhaseMode') private _factionPhaseMode: string = '';
+  @SyncVar('_factionOrder') private _factionOrder: string = '';
+  @SyncVar('_factionSkipUnassigned') private _factionSkipUnassigned: string = '';
+  @SyncVar('_moveStrict') private _moveStrict: string = '';
+  @SyncVar('_moveStrictPath') private _moveStrictPath: string = '';
+
+  // The rules of play the room answers for itself. Each one is left unanswered until the
+  // room settings are asked, and whatever is unanswered stays with the table that is out.
+  @SyncVar('_moveRangeEnabled') private _moveRangeEnabled: string = '';
+  @SyncVar('_moveRangeElementNames') private _moveRangeElementNames: string = '';
+  @SyncVar('_moveDiagonally') private _moveDiagonally: string = '';
+  @SyncVar('_diagonalMove') private _diagonalMove: string = '';
+  @SyncVar('_piecesShareCells') private _piecesShareCells: string = '';
+  @SyncVar('_moveRangeAlways') private _moveRangeAlways: string = '';
+  @SyncVar('_zocAlways') private _zocAlways: string = '';
+  @SyncVar('_cellDistance') private _cellDistance: number = -1;
+  @SyncVar('_cellDistanceUnit') private _cellDistanceUnit: string = '';
+  @SyncVar('_zocMode') private _zocMode: string = '';
+  @SyncVar('_zocRange') private _zocRange: number = -1;
+  @SyncVar('_zocExtraCost') private _zocExtraCost: number = -1;
+  @SyncVar('_zocEngages') private _zocEngages: string = '';
+  @SyncVar('_breakOutMode') private _breakOutMode: string = '';
+  @SyncVar('_breakOutCost') private _breakOutCost: number = -1;
+  @SyncVar('_engagementCountsSize') private _engagementCountsSize: string = '';
+  @SyncVar('_facingMark') private _facingMark: string = '';
+  @SyncVar('_pieceImageInCell') private _pieceImageInCell: string = '';
+
+  /** The game system the room rolls dice with by default; blank reads as the generic `DiceBot`. */
   get defaultDiceBot(): string {
     if (this._defaultDiceBot == '') {
       return 'DiceBot';
@@ -20,19 +76,308 @@ export class Config extends ObjectNode implements InnerXml {
     this._defaultDiceBot = dice;
   }
 
+  /**
+   * The items the remote controllers in this room show, or null to show every one.
+   *
+   * @see ControllerResourcePick
+   */
+  get controllerResources(): ControllerResourcePick {
+    return readControllerResourcePick(this._controllerResources);
+  }
+  set controllerResources(pick: ControllerResourcePick) {
+    this._controllerResources = writeControllerResourcePick(pick);
+  }
+
+  /** The room's master volume, shared by every peer; a change applied to the config updates the jukebox at once. */
   get roomVolume(): number {
     return this._roomVolume;
   }
   set roomVolume(volume: number) {
     this._roomVolume = volume;
   }
+
+  /**
+   * The image the room chose for system notices in chat.
+   *
+   * Empty uses the bundled picture; the empty image's own identifier means no picture at all.
+   */
+  get systemAvatarIdentifier(): string {
+    return this._systemAvatarIdentifier;
+  }
+  set systemAvatarIdentifier(identifier: string) {
+    this._systemAvatarIdentifier = identifier;
+  }
+
+  /** The image the room chose for dice results in chat, read the same way as {@link systemAvatarIdentifier}. */
+  get systemDiceAvatarIdentifier(): string {
+    return this._systemDiceAvatarIdentifier;
+  }
+  set systemDiceAvatarIdentifier(identifier: string) {
+    this._systemDiceAvatarIdentifier = identifier;
+  }
+
+  /** Whether the system's portrait is shown beside notices in chat; on unless the room turned it off. */
+  get isSystemAvatarVisible(): boolean {
+    return this._hideSystemAvatar !== '1';
+  }
+  set isSystemAvatarVisible(visible: boolean) {
+    this._hideSystemAvatar = visible ? '' : '1';
+  }
+
+  /**
+   * Whether system notices and dice results show the portrait of whoever caused them instead of the system's.
+   *
+   * Off unless the room turns it on. A notice with no speaker portrait falls back to the system's picture.
+   */
+  get isSpeakerAvatarVisible(): boolean {
+    return this._showSpeakerAvatar === '1';
+  }
+  set isSpeakerAvatarVisible(visible: boolean) {
+    this._showSpeakerAvatar = visible ? '1' : '';
+  }
+
+  /** How the round decides whose turn it is: by initiative, or side by side; anything unknown reads as the default. */
+  get turnOrderMode(): TurnOrderMode {
+    return asTurnOrderMode(this._turnOrderMode);
+  }
+  set turnOrderMode(mode: TurnOrderMode) {
+    this._turnOrderMode = asTurnOrderMode(mode);
+  }
+
+  /** When turns go side by side, how a side gets through its own phase: freely or by initiative. */
+  get factionPhaseMode(): FactionPhaseMode {
+    return asFactionPhaseMode(this._factionPhaseMode);
+  }
+  set factionPhaseMode(mode: FactionPhaseMode) {
+    this._factionPhaseMode = asFactionPhaseMode(mode);
+  }
+
+  /** The sides in the order the round takes them, as a comma-separated list. */
+  get factionOrder(): string {
+    return this._factionOrder;
+  }
+  set factionOrder(order: string) {
+    this._factionOrder = order;
+  }
+
+  /**
+   * Whether a piece is walked along a way it could have taken, rather than dropped anywhere.
+   *
+   * A room saved while this was two answers, one for the end and one for the way, is read as
+   * asking for it if either was said: both were ways of asking for a move that holds to the
+   * rules, and the one setting now does both.
+   */
+  get moveStrict(): boolean {
+    return this._moveStrict === '1' || this._moveStrictPath === '1';
+  }
+  set moveStrict(strict: boolean) {
+    this._moveStrict = strict ? '1' : '';
+    this._moveStrictPath = '';
+  }
+
+  /** Whether a round taken side by side skips the phase of pieces that belong to no side. */
+  get factionSkipUnassigned(): boolean {
+    return this._factionSkipUnassigned === '1';
+  }
+  set factionSkipUnassigned(skips: boolean) {
+    this._factionSkipUnassigned = skips ? '1' : '';
+  }
+
+  /**
+   * Whether pieces show how far they can move, or null where the room leaves it to the table in play.
+   *
+   * The same null applies to every rule of play below: an unanswered rule is taken from the table.
+   */
+  get moveRangeEnabled(): boolean | null {
+    return readRuleFlag(this._moveRangeEnabled);
+  }
+  set moveRangeEnabled(answer: boolean | null) {
+    this._moveRangeEnabled = writeRuleFlag(answer);
+  }
+
+  /** The comma-separated names of the sheet fields read as a piece's movement, or null to leave it to the table. */
+  get moveRangeElementNames(): string | null {
+    return readRuleText(this._moveRangeElementNames);
+  }
+  set moveRangeElementNames(answer: string | null) {
+    this._moveRangeElementNames = writeRuleText(answer);
+  }
+
+  /**
+   * Whether a piece may cut corners at all, or null to leave it to the table.
+   *
+   * Setting this alone leaves {@link diagonalMove} as it is, while setting that also writes this.
+   */
+  get moveDiagonally(): boolean | null {
+    return readRuleFlag(this._moveDiagonally);
+  }
+  /**
+   * How a corner is counted, or nothing where the room has not said.
+   *
+   * Written alongside the older yes-or-no, never instead of it: a peer on a version that only
+   * knows the older question still has to be told whether corners may be cut at all.
+   */
+  get diagonalMove(): DiagonalMove | null {
+    return asDiagonalMove(readRuleText(this._diagonalMove));
+  }
+  set diagonalMove(answer: DiagonalMove | null) {
+    this._diagonalMove = writeRuleText(answer);
+    this._moveDiagonally = writeRuleFlag(answer === null ? null : allowsDiagonal(answer));
+  }
+  set moveDiagonally(answer: boolean | null) {
+    this._moveDiagonally = writeRuleFlag(answer);
+  }
+
+  /** Whether a piece may end its move on a cell another piece stands on, or null to leave it to the table. */
+  get piecesShareCells(): boolean | null {
+    return readRuleFlag(this._piecesShareCells);
+  }
+  set piecesShareCells(answer: boolean | null) {
+    this._piecesShareCells = writeRuleFlag(answer);
+  }
+
+  /** Whether the selected piece's reach stays shown without picking it up, or null to leave it to the table. */
+  get moveRangeAlways(): boolean | null {
+    return readRuleFlag(this._moveRangeAlways);
+  }
+  set moveRangeAlways(answer: boolean | null) {
+    this._moveRangeAlways = writeRuleFlag(answer);
+  }
+
+  /** Whether the ground enemies hold stays shown for the selected piece, or null to leave it to the table. */
+  get zocAlways(): boolean | null {
+    return readRuleFlag(this._zocAlways);
+  }
+  set zocAlways(answer: boolean | null) {
+    this._zocAlways = writeRuleFlag(answer);
+  }
+
+  /** How much distance one cell stands for, in {@link cellDistanceUnit}, or null to leave it to the table. */
+  get cellDistance(): number | null {
+    return readRuleNumber(this._cellDistance);
+  }
+  set cellDistance(answer: number | null) {
+    this._cellDistance = writeRuleNumber(answer);
+  }
+
+  /** The unit {@link cellDistance} is measured in, cells or a length, or null to leave it to the table. */
+  get cellDistanceUnit(): string | null {
+    return readRuleText(this._cellDistanceUnit);
+  }
+  set cellDistanceUnit(answer: string | null) {
+    this._cellDistanceUnit = writeRuleText(answer);
+  }
+
+  /** What the ground around an enemy does to a piece walking into it (none, stop, block or cost), or null. */
+  get zocMode(): string | null {
+    return readRuleText(this._zocMode);
+  }
+  set zocMode(answer: string | null) {
+    this._zocMode = writeRuleText(answer);
+  }
+
+  /** How many steps out from an enemy its held ground reaches, or null to leave it to the table. */
+  get zocRange(): number | null {
+    return readRuleNumber(this._zocRange);
+  }
+  set zocRange(answer: number | null) {
+    this._zocRange = writeRuleNumber(answer);
+  }
+
+  /** The extra steps charged for entering held ground when the mode is cost, or null to leave it to the table. */
+  get zocExtraCost(): number | null {
+    return readRuleNumber(this._zocExtraCost);
+  }
+  set zocExtraCost(answer: number | null) {
+    this._zocExtraCost = writeRuleNumber(answer);
+  }
+
+  /** Whether pieces standing against one another form one fight rather than pairs, or null to leave it to the table. */
+  get zocEngages(): boolean | null {
+    return readRuleFlag(this._zocEngages);
+  }
+  set zocEngages(answer: boolean | null) {
+    this._zocEngages = writeRuleFlag(answer);
+  }
+
+  /** What a piece must do to walk out of a fight (weighed, cost, block or free), or null to leave it to the table. */
+  get breakOutMode(): string | null {
+    return readRuleText(this._breakOutMode);
+  }
+  set breakOutMode(answer: string | null) {
+    this._breakOutMode = writeRuleText(answer);
+  }
+
+  /** The steps leaving a fight costs when every leaving costs the same, or null to leave it to the table. */
+  get breakOutCost(): number | null {
+    return readRuleNumber(this._breakOutCost);
+  }
+  set breakOutCost(answer: number | null) {
+    this._breakOutCost = writeRuleNumber(answer);
+  }
+
+  /** Whether a piece weighs as much as the cells it covers when sides are weighed, or null to leave it to the table. */
+  get engagementCountsSize(): boolean | null {
+    return readRuleFlag(this._engagementCountsSize);
+  }
+  set engagementCountsSize(answer: boolean | null) {
+    this._engagementCountsSize = writeRuleFlag(answer);
+  }
+
+  /** How a piece shows which way it faces (none, turn or arrow), or null to leave it to the table. */
+  get facingMark(): string | null {
+    return readRuleText(this._facingMark);
+  }
+  set facingMark(answer: string | null) {
+    this._facingMark = writeRuleText(answer);
+  }
+
+  /** Whether a piece is drawn no taller than the cell it stands on, or null to leave it to the table. */
+  get pieceImageInCell(): boolean | null {
+    return readRuleFlag(this._pieceImageInCell);
+  }
+  set pieceImageInCell(answer: boolean | null) {
+    this._pieceImageInCell = writeRuleFlag(answer);
+  }
+
+  /** Every rule of play the room has been asked about, answered or not. */
+  get roomRuleAnswers(): RoomRuleAnswers {
+    return {
+      moveRangeEnabled: this.moveRangeEnabled,
+      moveRangeElementNames: this.moveRangeElementNames,
+      moveDiagonally: this.moveDiagonally,
+      diagonalMove: this.diagonalMove,
+      piecesShareCells: this.piecesShareCells,
+      moveRangeAlways: this.moveRangeAlways,
+      zocAlways: this.zocAlways,
+      cellDistance: this.cellDistance,
+      cellDistanceUnit: this.cellDistanceUnit,
+      zocMode: this.zocMode,
+      zocRange: this.zocRange,
+      zocExtraCost: this.zocExtraCost,
+      zocEngages: this.zocEngages,
+      breakOutMode: this.breakOutMode,
+      breakOutCost: this.breakOutCost,
+      engagementCountsSize: this.engagementCountsSize,
+      facingMark: this.facingMark,
+      pieceImageInCell: this.pieceImageInCell,
+    };
+  }
+
   // The jukebox keeps the settings of the person listening.
   // The master volume lives here because the shared settings are saved together.
+  /** The room's jukebox, which the master volume is applied to. */
   get jukebox(): Jukebox {
     return ObjectStore.instance.get<Jukebox>('Jukebox')!;
   }
 
   private static _instance: Config;
+  /**
+   * The room's one config, shared by every peer under a fixed identifier.
+   *
+   * Prefers the copy already in the object store, such as one received from another peer, and creates and
+   * registers it when there is none yet.
+   */
   static get instance(): Config {
     const stored = ObjectStore.instance.get<Config>('Config');
     if (stored) return (Config._instance = stored);
@@ -41,6 +386,11 @@ export class Config extends ObjectNode implements InnerXml {
     return Config._instance;
   }
 
+  /**
+   * Loading a saved room copies the saved settings onto the room's existing config and discards this copy.
+   *
+   * This keeps a single config in the room rather than adding a second one from the save file.
+   */
   override parseInnerXml(element: Element) {
     const context = Config.instance.toContext();
     context.syncData = this.toContext().syncData;
@@ -51,6 +401,7 @@ export class Config extends ObjectNode implements InnerXml {
     this.destroy();
   }
 
+  /** Takes in synced settings, and passes a changed master volume on to the jukebox straight away. */
   override apply(context: ObjectContext) {
     const _roomVolume = this._roomVolume;
     const _defaultDiceBot = this._defaultDiceBot;

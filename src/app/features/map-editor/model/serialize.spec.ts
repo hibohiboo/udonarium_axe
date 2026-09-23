@@ -1,7 +1,9 @@
 import { GridType } from '@axe/domain/tabletop/game-table';
+import { DEFAULT_FUNCTION_SPEC } from '@axe/features/map-editor/model/function-layer';
 import {
   CellLayer,
   createScene,
+  FunctionLayer,
   ImageLayer,
   MAP_SCENE_VERSION,
   MapScene,
@@ -527,5 +529,84 @@ describe('deserializeScene round-trip', () => {
     expect(result).not.toBeNull();
     expect(result!.layers).toHaveLength(1);
     expect(result!.layers[0].id).toBe('l2');
+  });
+
+  it('keeps the guides laid on a scene', () => {
+    const scene = createScene(5, 5, 64);
+    scene.guides = [
+      { id: 'g1', axis: 'x', at: 120 },
+      { id: 'g2', axis: 'y', at: 40 },
+    ];
+
+    const back = deserializeScene(serializeScene(scene));
+
+    expect(back!.guides).toEqual(scene.guides);
+  });
+
+  it('drops guides that name no axis or land nowhere', () => {
+    const raw = {
+      version: MAP_SCENE_VERSION,
+      cols: 5,
+      rows: 5,
+      cellPx: 64,
+      background: '#fff',
+      gridColor: '#000',
+      gridVisible: true,
+      layers: [],
+      guides: [
+        { id: 'g1', axis: 'z', at: 10 },
+        { id: 'g2', axis: 'x', at: 'over there' },
+        { id: 'g3', axis: 'y', at: 30 },
+      ],
+    };
+
+    expect(deserializeScene(JSON.stringify(raw))!.guides).toEqual([{ id: 'g3', axis: 'y', at: 30 }]);
+  });
+
+  it('leaves a scene that was never given guides without any', () => {
+    expect(deserializeScene(serializeScene(createScene(5, 5, 64)))!.guides).toBeUndefined();
+  });
+});
+
+describe('the cells painted for what they do', () => {
+  function sceneWithFunction(): MapScene {
+    const layer: FunctionLayer = {
+      id: 'f',
+      kind: 'function',
+      name: '立入禁止',
+      visible: true,
+      locked: false,
+      opacity: 1,
+      role: 'terrain',
+      cells: { '2,3': true, '4,5': true },
+      spec: { ...DEFAULT_FUNCTION_SPEC, terrain: { ...DEFAULT_FUNCTION_SPEC.terrain, height: 3 } },
+    };
+    return { ...makeScene(), layers: [layer] };
+  }
+
+  it('carries the role, the cells and the settings through a round trip', () => {
+    const restored = deserializeScene(serializeScene(sceneWithFunction()));
+
+    const layer = restored?.layers[0] as FunctionLayer;
+    expect(layer.kind).toBe('function');
+    expect(layer.role).toBe('terrain');
+    expect(Object.keys(layer.cells).sort()).toEqual(['2,3', '4,5']);
+    expect(layer.spec.terrain.height).toBe(3);
+  });
+
+  it('reads a role it does not know as the one a new layer starts on', () => {
+    const json = serializeScene(sceneWithFunction()).replace('"role":"terrain"', '"role":"damage"');
+
+    const layer = deserializeScene(json)?.layers[0] as FunctionLayer;
+
+    expect(layer.role).toBe('moveBlock');
+  });
+
+  it('keeps only the cells that were written down as painted', () => {
+    const json = serializeScene(sceneWithFunction()).replace('"2,3":true', '"2,3":false');
+
+    const layer = deserializeScene(json)?.layers[0] as FunctionLayer;
+
+    expect(Object.keys(layer.cells)).toEqual(['4,5']);
   });
 });

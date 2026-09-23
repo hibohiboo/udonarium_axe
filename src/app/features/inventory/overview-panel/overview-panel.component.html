@@ -1,8 +1,13 @@
 <div
   class="text-ui-text animate-fade-in pointer-events-none absolute z-9000 box-border max-h-full max-w-full overflow-visible overscroll-contain"
   appDraggable
+  [draggable.disable]="edgeSeat !== null"
   #draggablePanel
   [attr.data-v]="objectVersion()"
+  [attr.data-tooltip-rotation]="rotationDegrees"
+  [attr.inert]="edgeSeat ? '' : null"
+  [style.transform]="'rotateZ(' + rotationDegrees + 'deg)'"
+  style="transform-origin: top left"
 >
   @if (tabletopObject && canViewObject()) {
     @switch (tabletopObject.aliasName) {
@@ -47,16 +52,26 @@
   <div class="max-w-62.5 text-[12px]" [ngClass]="pointerEventsStyle" [ngStyle]="{ width: overViewCardWidth + 'px' }">
     @if (hasImage()) {
       <div class="relative">
-        <img
-          class="bg-ui-input box-border block max-h-82.5 w-62.5 object-contain p-2 align-bottom"
-          [src]="imageUrl() | safe: 'resourceUrl'"
-        />
-        <button class="absolute -bottom-5.25 left-2 size-10.5 rounded-full p-1" (click)="chanageImageView(true)">
+        @if (overviewFaceCard; as faceCard) {
+          <card-face-preview
+            [card]="faceCard"
+            [imageUrl]="imageUrl()"
+            [frameWidth]="250"
+            [frameHeight]="330"
+            [padding]="8"
+          />
+        } @else {
+          <img
+            class="bg-ui-input box-border block max-h-82.5 w-62.5 object-contain p-2 align-bottom"
+            [src]="imageUrl() | safe: 'resourceUrl'"
+          />
+        }
+        <button class="absolute -bottom-5.25 left-2 z-3 size-10.5 rounded-full p-1" (click)="chanageImageView(true)">
           <i class="material-icons align-bottom text-[24px]!">zoom_in</i>
         </button>
         @if (card.hasOwner && card.ownerName) {
           <div
-            class="text-ui-muted absolute right-0 bottom-0 box-border max-w-full overflow-hidden px-[1em] py-0.5 text-right align-middle text-[0.8em]"
+            class="text-ui-muted absolute right-0 bottom-0 z-3 box-border max-w-full overflow-hidden px-[1em] py-0.5 text-right align-middle text-[0.8em]"
           >
             <div
               class="text-ui-muted bg-ui-elevated mr-0 ml-auto box-border w-min max-w-full truncate rounded-md px-2.25 py-0.75"
@@ -509,14 +524,18 @@
       @default {
         <div class="box-border truncate pr-4 leading-6">{{ dataElm.name }}</div>
         <div class="box-border truncate text-right text-[1.2em]/6">
-          <div class="invisible h-0 min-w-12 overflow-hidden whitespace-pre-wrap">{{ dataElm.value }}</div>
-          <input
-            class="text-ui-text hover:bg-ui-hover focus:bg-ui-input box-border w-full min-w-12 rounded-xs border-none bg-transparent p-0 text-right font-[inherit] leading-[inherit] outline-none"
-            size="1"
-            name="data-value"
-            name="data-value"
-            [(ngModel)]="dataElm.value"
-          />
+          @if (isCalcElement(dataElm)) {
+            <span class="text-ui-text font-bold">{{ calcText(dataElm) }}</span>
+          } @else {
+            <div class="invisible h-0 min-w-12 overflow-hidden whitespace-pre-wrap">{{ dataElm.value }}</div>
+            <input
+              class="text-ui-text hover:bg-ui-hover focus:bg-ui-input box-border w-full min-w-12 rounded-xs border-none bg-transparent p-0 text-right font-[inherit] leading-[inherit] outline-none"
+              size="1"
+              name="data-value"
+              name="data-value"
+              [(ngModel)]="dataElm.value"
+            />
+          }
         </div>
       }
     }
@@ -530,6 +549,16 @@
     (click)="chanageImageView(false)"
   >
     <div class="pointer-events-none absolute top-4 right-4"><i class="material-icons text-[36px]!">close</i></div>
-    <img class="box-border size-full object-contain p-4 align-bottom" [src]="imageUrl() | safe: 'resourceUrl'" />
+    @if (overviewFaceCard; as faceCard) {
+      <card-face-preview
+        class="block size-full"
+        [card]="faceCard"
+        [imageUrl]="imageUrl()"
+        [padding]="16"
+        [framed]="false"
+      />
+    } @else {
+      <img class="box-border size-full object-contain p-4 align-bottom" [src]="imageUrl() | safe: 'resourceUrl'" />
+    }
   </div>
 </ng-template>

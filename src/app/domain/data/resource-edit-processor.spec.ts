@@ -1,24 +1,20 @@
-import { ObjectStore } from '@axe/core/sync/object-store';
+import { diceBotUnreachable$, DiceBotUnreachableEvent } from '@axe/core/event/domain-events';
 import { GameCharacter } from '@axe/domain/character/game-character';
+import { ChatMessage } from '@axe/domain/chat/chat-message';
+import { ChatTab } from '@axe/domain/chat/chat-tab';
 import { ResourceEdit, ResourceEditProcessor } from '@axe/domain/data/resource-edit-processor';
+import { PeerCursor } from '@axe/domain/peer/peer-cursor';
+import { PeerRole } from '@axe/domain/peer/peer-role';
 
 describe('ResourceEditProcessor', () => {
-  let store: ObjectStore;
   let processor: ResourceEditProcessor;
 
   const mockDiceRollAsync = vi.fn();
   const mockLoadGameSystemAsync = vi.fn();
 
   beforeEach(() => {
-    store = ObjectStore.instance;
     processor = new ResourceEditProcessor(mockDiceRollAsync, mockLoadGameSystemAsync);
     vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
   });
 
   describe('parseOption', () => {
@@ -173,6 +169,7 @@ describe('ResourceEditProcessor', () => {
         command: '+10+(1d1-1)',
         replace: '',
         isDiceRoll: false,
+        embeddedRolls: [],
         calcAns: 10,
         nowOrMax: 'now',
         option: { limitMinMax: false, zeroLimit: false, isErr: false },
@@ -193,6 +190,7 @@ describe('ResourceEditProcessor', () => {
         command: '50+(1d1-1)',
         replace: '',
         isDiceRoll: false,
+        embeddedRolls: [],
         calcAns: 50,
         nowOrMax: 'now',
         option: { limitMinMax: false, zeroLimit: false, isErr: false },
@@ -213,6 +211,7 @@ describe('ResourceEditProcessor', () => {
         command: '+999+(1d1-1)',
         replace: '',
         isDiceRoll: false,
+        embeddedRolls: [],
         calcAns: 999,
         nowOrMax: 'now',
         option: { limitMinMax: true, zeroLimit: false, isErr: false },
@@ -233,6 +232,7 @@ describe('ResourceEditProcessor', () => {
         command: '-300+(1d1-1)',
         replace: '',
         isDiceRoll: false,
+        embeddedRolls: [],
         calcAns: -300,
         nowOrMax: 'now',
         option: { limitMinMax: false, zeroLimit: true, isErr: false },
@@ -242,6 +242,196 @@ describe('ResourceEditProcessor', () => {
 
       const result = processor.resourceEdit(edit, character);
       expect(result).toContain('(0制限)');
+    });
+  });
+
+  describe('resourceEditProcess', () => {
+    let tab: ChatTab;
+    let character: GameCharacter;
+
+    function speak(text: string): ChatMessage {
+      return tab.addMessage({
+        identifier: '',
+        tabIdentifier: tab.identifier,
+        from: 'peer',
+        timestamp: 1,
+        imageIdentifier: '',
+        tag: '',
+        name: 'プレイヤー',
+        text,
+      });
+    }
+
+    function systemText(): string {
+      return tab.chatMessages
+        .filter((message) => message.tag === 'system')
+        .map((message) => message.text)
+        .join('\n');
+    }
+
+    beforeEach(() => {
+      PeerCursor.createMyCursor();
+      tab = new ChatTab();
+      tab.initialize();
+      character = GameCharacter.create('キャラクターB', 1, '');
+      mockLoadGameSystemAsync.mockResolvedValue({ ID: 'DiceBot' });
+    });
+
+    describe('sweeping buffs off the table', () => {
+      let archer: GameCharacter;
+
+      beforeEach(() => {
+        character.setLocation('table');
+        character.addExtendData();
+        character.buffs.addRound('毒', '', 3, { timing: 'none' });
+        character.buffs.addRound('加速', '', 2);
+        archer = GameCharacter.create('弓兵', 1, '');
+        archer.setLocation('table');
+        archer.addExtendData();
+        archer.buffs.addRound('毒', '', 2);
+      });
+
+      afterEach(() => {
+        archer.destroy();
+        character.destroy();
+      });
+
+      function names(piece: GameCharacter): string[] {
+        return (piece.buffDataElement?.children[0]?.children ?? []).map((data) => data.name);
+      }
+
+      it('takes a buff of that name off every piece on the table for the game master, and says how many', async () => {
+        PeerCursor.myCursor.role = PeerRole.GameMaster;
+
+        processor.checkResourceEditCommand(speak('&&毒-'), [{ text: '&&毒-', object: character }]);
+
+        await vi.waitFor(() => expect(systemText()).toContain('卓全体から「毒」を解除（2体・2件）'));
+        expect(names(character)).toEqual(['加速']);
+        expect(names(archer)).toEqual([]);
+      });
+
+      it('takes nothing for anyone but the game master, and says the sweep is theirs', async () => {
+        PeerCursor.myCursor.role = PeerRole.Player;
+
+        processor.checkResourceEditCommand(speak('&&2R-'), [{ text: '&&2R-', object: character }]);
+
+        await vi.waitFor(() => expect(systemText()).toContain('バフの一括解除はGMだけが使えます（&&2R-）'));
+        expect(names(character)).toEqual(['毒', '加速']);
+        expect(names(archer)).toEqual(['毒']);
+      });
+
+      it('says so when nothing on the table matches', async () => {
+        PeerCursor.myCursor.role = PeerRole.GameMaster;
+
+        processor.checkResourceEditCommand(speak('&&9R-'), [{ text: '&&9R-', object: character }]);
+
+        await vi.waitFor(() => expect(systemText()).toContain('卓全体に残り9Rのバフはありません'));
+      });
+    });
+
+    it('says which command it could not work out', async () => {
+      mockDiceRollAsync.mockResolvedValue({ id: 'DiceBot', result: '', isSecret: false });
+
+      await processor.resourceEditProcess(
+        null,
+        [{ resourceCommand: 't:HP-t{敏捷度}', object: character }],
+        [],
+        speak('t:HP-t{敏捷度}'),
+        false
+      );
+
+      expect(systemText()).toContain('[キャラクターB] t:HP-t{敏捷度}を計算できません');
+      expect(character.status.getValue('HP', 'now')).toBe(200);
+    });
+
+    it('rolls a bracketed command on its own and works its answer into the arithmetic', async () => {
+      mockDiceRollAsync.mockImplementation(async (command: string) =>
+        command === 'k10'
+          ? { id: 'SwordWorld2.5', result: 'SwordWorld2.5 : KeyNo.10c[10] ＞ 2D:[3,2]=5 ＞ 2', isSecret: false }
+          : {
+              id: 'SwordWorld2.5',
+              result: 'SwordWorld2.5 : (-(2+5-3)+(1D1-1)) ＞ -(2+5-3)+(1[1]-1) ＞ -4',
+              isSecret: false,
+            }
+      );
+
+      await processor.resourceEditProcess(
+        null,
+        [{ resourceCommand: 't:HP-([k10]+5-3)', object: character }],
+        [],
+        speak('t:HP-([k10]+5-3)'),
+        false
+      );
+
+      expect(mockDiceRollAsync).toHaveBeenNthCalledWith(1, 'k10', expect.anything());
+      expect(mockDiceRollAsync).toHaveBeenNthCalledWith(2, '-(2+5-3)+(1d1-1)', expect.anything());
+      expect(character.status.getValue('HP', 'now')).toBe(196);
+      expect(systemText()).toContain('└ [k10] KeyNo.10c[10] ＞ 2D:[3,2]=5 ＞ 2');
+    });
+
+    it('says so when the bracketed command is one the dice bot cannot answer', async () => {
+      mockDiceRollAsync.mockResolvedValue({ id: 'DiceBot', result: '', isSecret: false });
+
+      await processor.resourceEditProcess(
+        null,
+        [{ resourceCommand: 't:HP-([k10]+5)', object: character }],
+        [],
+        speak('t:HP-([k10]+5)'),
+        false
+      );
+
+      expect(mockDiceRollAsync).toHaveBeenCalledTimes(1);
+      expect(systemText()).toContain('t:HP-([k10]+5)を計算できません');
+      expect(character.status.getValue('HP', 'now')).toBe(200);
+    });
+
+    it('keeps the edits it could work out when another command fails', async () => {
+      mockDiceRollAsync.mockImplementation(async (command: string) =>
+        command.includes('{')
+          ? { id: 'DiceBot', result: '', isSecret: false }
+          : { id: 'DiceBot', result: 'DiceBot : (-5+(1D1-1)) ＞ -5+(1[1]-1) ＞ -5', isSecret: false }
+      );
+
+      await processor.resourceEditProcess(
+        null,
+        [
+          { resourceCommand: 't:HP-t{敏捷度}', object: character },
+          { resourceCommand: 't:MP-5', object: character },
+        ],
+        [],
+        speak('t:HP-t{敏捷度} t:MP-5'),
+        false
+      );
+
+      expect(character.status.getValue('MP', 'now')).toBe(95);
+      expect(systemText()).toContain('t:HP-t{敏捷度}を計算できません');
+    });
+
+    it('leaves the amounts alone and says the dice bot could not be fetched when it has none to work them out with', async () => {
+      const standIn = { ID: 'DiceBot' };
+      mockLoadGameSystemAsync.mockResolvedValue(standIn);
+      const withoutDiceBot = new ResourceEditProcessor(
+        mockDiceRollAsync,
+        mockLoadGameSystemAsync,
+        (gameSystem) => gameSystem === standIn
+      );
+      const line = speak('t:HP-5');
+      const unrolled: DiceBotUnreachableEvent[] = [];
+      const stopListening = diceBotUnreachable$.subscribe((event) => unrolled.push(event));
+
+      await withoutDiceBot.resourceEditProcess(
+        null,
+        [{ resourceCommand: 't:HP-5', object: character }],
+        [],
+        line,
+        false
+      );
+      stopListening();
+
+      expect(mockDiceRollAsync).not.toHaveBeenCalled();
+      expect(systemText()).not.toContain('計算できません');
+      expect(character.status.getValue('HP', 'now')).toBe(200);
+      expect(unrolled).toEqual([{ messageIdentifier: line.identifier, gameType: 'DiceBot' }]);
     });
   });
 

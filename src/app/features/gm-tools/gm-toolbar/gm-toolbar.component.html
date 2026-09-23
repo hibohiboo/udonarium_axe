@@ -1,4 +1,4 @@
-@if (isGameMaster()) {
+@if (shown()) {
   <div
     #bar
     class="npc-bar-dropzone rounded-ui-lg border-ui-border-panel bg-ui-panel text-ui-text shadow-ui-md fixed top-0 left-0 z-150 flex cursor-grab items-center gap-1 border border-solid px-2 py-1.5 [backdrop-filter:blur(24px)_saturate(1.5)] select-none [-webkit-backdrop-filter:blur(24px)_saturate(1.5)] active:cursor-grabbing"
@@ -15,217 +15,164 @@
       {{ 'app.fab.gmTools' | transloco }}
     </span>
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [title]="'app.fab.objectList' | transloco"
-      (click)="openObjectList()"
-    >
-      <i class="material-icons">category</i>
-    </button>
+    <ui-icon-button
+      [icon]="folded() ? 'expand_more' : 'expand_less'"
+      [label]="(folded() ? 'app.fab.unfoldToolbar' : 'app.fab.foldToolbar') | transloco"
+      testId="gm-toolbar-fold"
+      (press)="toggleFold()"
+    />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [title]="'feature.mapEditor.title' | transloco"
-      (click)="openMapEditor()"
-    >
-      <i class="material-icons">architecture</i>
-    </button>
+    @if (!folded()) {
+      <ui-icon-button icon="category" [label]="'app.fab.objectList' | transloco" (press)="openObjectList()" />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [title]="'feature.gmTools.party.title' | transloco"
-      (click)="openPartyList()"
-    >
-      <i class="material-icons">group_work</i>
-    </button>
+      <ui-icon-button
+        icon="groups"
+        [label]="'app.fab.npcBar' | transloco"
+        [active]="npcBar.isOpen()"
+        (press)="toggleNpcBar()"
+      />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [title]="'feature.buffManager.title' | transloco"
-      (click)="openBuffManager()"
-    >
-      <i class="material-icons">timeline</i>
-    </button>
+      <ui-icon-button icon="group_work" [label]="'feature.gmTools.party.title' | transloco" (press)="openPartyList()" />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [title]="'feature.effect.title' | transloco"
-      (click)="openEffectLibrary()"
-    >
-      <i class="material-icons">auto_awesome</i>
-    </button>
+      <ui-icon-button
+        [icon]="darknessEnabled() ? 'bedtime' : 'bedtime_off'"
+        [label]="(darknessEnabled() ? 'app.fab.darknessOn' : 'app.fab.darknessOff') | transloco"
+        [active]="darknessEnabled()"
+        [dim]="!darknessEnabled()"
+        (press)="toggleDarkness()"
+      />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [class.text-ui-accent]="npcBar.isOpen()"
-      [class.bg-ui-accent-bg]="npcBar.isOpen()"
-      [title]="'app.fab.npcBar' | transloco"
-      (click)="toggleNpcBar()"
-    >
-      <i class="material-icons">groups</i>
-    </button>
+      <ui-icon-button
+        [icon]="fogEnabled() ? 'foggy' : 'filter_drama'"
+        [label]="(fogEnabled() ? 'app.fab.fogOn' : 'app.fab.fogOff') | transloco"
+        [active]="fogEnabled()"
+        [dim]="!fogEnabled()"
+        (press)="toggleFog()"
+      />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [class.text-ui-accent]="darknessEnabled()"
-      [class.bg-ui-accent-bg]="darknessEnabled()"
-      [class.text-ui-dim]="!darknessEnabled()"
-      [title]="(darknessEnabled() ? 'app.fab.darknessOn' : 'app.fab.darknessOff') | transloco"
-      (click)="toggleDarkness()"
-    >
-      <i class="material-icons">{{ darknessEnabled() ? 'bedtime' : 'bedtime_off' }}</i>
-    </button>
+      <ui-icon-button
+        icon="align_horizontal_left"
+        [label]="(overlay.resourceBars() ? 'app.fab.resourceBarsShown' : 'app.fab.resourceBarsHidden') | transloco"
+        [active]="overlay.resourceBars()"
+        [dim]="!overlay.resourceBars()"
+        testId="toolbar-resource-bars"
+        (press)="overlay.toggleResourceBars()"
+      />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [class.text-ui-accent]="handRail.isOpen()"
-      [class.bg-ui-accent-bg]="handRail.isOpen()"
-      [title]="'app.fab.handCards' | transloco"
-      (click)="toggleHandRail()"
-    >
-      <i class="material-icons">style</i>
-    </button>
+      <ui-icon-button
+        [icon]="overlay.buffs() ? 'auto_fix_high' : 'auto_fix_off'"
+        [label]="(overlay.buffs() ? 'app.fab.buffsShown' : 'app.fab.buffsHidden') | transloco"
+        [active]="overlay.buffs()"
+        [dim]="!overlay.buffs()"
+        testId="toolbar-buffs"
+        (press)="overlay.toggleBuffs()"
+      />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [title]="'app.fab.releaseOwnership' | transloco"
-      (click)="releaseOrphanedOwnership()"
-    >
-      <i class="material-icons">key_off</i>
-    </button>
+      <ui-icon-button
+        icon="key_off"
+        [label]="'app.fab.releaseOwnership' | transloco"
+        (press)="releaseOrphanedOwnership()"
+      />
 
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [class.text-ui-accent]="widgets.clock()"
-      [class.bg-ui-accent-bg]="widgets.clock()"
-      [title]="'app.fab.clock' | transloco"
-      (click)="widgets.toggleClock()"
-    >
-      <i class="material-icons">schedule</i>
-    </button>
-
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [class.text-ui-accent]="widgets.recording()"
-      [class.bg-ui-accent-bg]="widgets.recording()"
-      [title]="'app.fab.recording' | transloco"
-      (click)="widgets.toggleRecording()"
-    >
-      <i class="material-icons">radio_button_checked</i>
-    </button>
-
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [class.text-ui-accent]="widgets.connectionQuality()"
-      [class.bg-ui-accent-bg]="widgets.connectionQuality()"
-      [title]="'app.fab.connectionQuality' | transloco"
-      (click)="widgets.toggleConnectionQuality()"
-    >
-      <i class="material-icons">network_check</i>
-    </button>
-
-    <button
-      type="button"
-      class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex size-8 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[20px]!"
-      [class.text-ui-accent]="widgets.miniPlayer()"
-      [class.bg-ui-accent-bg]="widgets.miniPlayer()"
-      [title]="'app.fab.miniPlayer' | transloco"
-      (click)="widgets.toggleMiniPlayer()"
-    >
-      <i class="material-icons">play_circle</i>
-    </button>
-
-    @if (turnIndicator(); as turn) {
-      <span
-        class="border-ui-border-panel text-ui-muted flex h-8 max-w-64 items-center gap-1 border-l border-solid pl-2 text-[12px]"
-        [title]="'feature.turnOrder.title' | transloco"
-      >
-        <button
-          type="button"
-          class="rounded-ui-sm text-ui-dim hover:bg-ui-hover hover:text-ui-text flex size-6 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[16px]!"
-          [title]="'feature.turnOrder.prev' | transloco"
-          (click)="turnPrev()"
+      @if (turnIndicator(); as turn) {
+        <span
+          class="border-ui-border-panel text-ui-muted flex h-8 max-w-64 items-center gap-1 border-l border-solid pl-2 text-[12px]"
+          [title]="'feature.turnOrder.title' | transloco"
         >
-          <i class="material-icons">chevron_left</i>
-        </button>
-
-        <span class="text-ui-accent shrink-0 font-semibold">{{
-          'feature.turnOrder.roundShort' | transloco: { n: turn.round }
-        }}</span>
-        @if (turn.statusKey) {
-          <span class="truncate">{{ turn.statusKey | transloco }}</span>
-        } @else {
-          <span class="text-ui-text truncate font-semibold">{{ turn.name }}</span>
-        }
-
-        <button
-          type="button"
-          class="rounded-ui-sm text-ui-dim hover:bg-ui-hover hover:text-ui-text flex size-6 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[16px]!"
-          [title]="'feature.turnOrder.next' | transloco"
-          (click)="turnNext()"
-        >
-          <i class="material-icons">chevron_right</i>
-        </button>
-      </span>
-    }
-
-    <div class="relative flex">
-      <button
-        type="button"
-        class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex h-8 cursor-pointer items-center gap-1 border-none bg-transparent px-1.5 transition-colors [&_i]:text-[20px]!"
-        [class.bg-amber-400/20]="currentPersona()"
-        [class.text-amber-500]="currentPersona()"
-        [title]="'feature.gmTools.persona.title' | transloco"
-        (click)="togglePersona()"
-      >
-        <i class="material-icons">{{ currentPersona() ? 'visibility' : 'visibility_off' }}</i>
-        @if (currentPersona(); as persona) {
-          <span class="max-w-24 truncate text-[12px] font-semibold">{{ persona.name }}</span>
-        }
-      </button>
-
-      @if (personaOpen()) {
-        <ul
-          class="persona-dropdown border-ui-border-panel bg-ui-panel text-ui-text shadow-ui-md rounded-ui absolute top-[calc(100%+6px)] left-0 z-10 m-0 flex max-h-64 w-52 list-none flex-col gap-0.5 overflow-y-auto border border-solid p-1 [backdrop-filter:blur(24px)_saturate(1.5)] [-webkit-backdrop-filter:blur(24px)_saturate(1.5)]"
-        >
-          <li
-            class="rounded-ui-sm hover:bg-ui-menu-hover hover:text-ui-accent flex cursor-pointer items-center gap-2 px-2 py-1.5 text-[12px] [&_i]:text-[16px]"
-            [class.text-ui-accent]="!currentPersona()"
-            [class.bg-ui-accent-bg]="!currentPersona()"
-            (click)="selectPersona(null)"
+          <button
+            type="button"
+            class="rounded-ui-sm text-ui-dim hover:bg-ui-hover hover:text-ui-text flex size-6 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[16px]!"
+            [title]="'feature.turnOrder.prev' | transloco"
+            (click)="turnPrev()"
           >
-            <i class="material-icons">shield</i>
-            <span>{{ 'feature.gmTools.persona.self' | transloco }}</span>
-          </li>
-          @for (persona of personas(); track persona.identifier) {
+            <i class="material-icons">chevron_left</i>
+          </button>
+
+          <span class="text-ui-accent shrink-0 font-semibold">{{
+            'feature.turnOrder.roundShort' | transloco: { n: turn.round }
+          }}</span>
+          @if (turn.sideName) {
+            <span
+              class="rounded-ui-sm bg-ui-accent-bg text-ui-accent shrink-0 truncate px-1.5 py-0.5 text-[11px] font-semibold"
+              >{{ turn.sideName }}</span
+            >
+          }
+          @if (turn.statusKey) {
+            <span class="truncate">{{ turn.statusKey | transloco }}</span>
+          } @else {
+            <span class="text-ui-text truncate font-semibold">{{ turn.name }}</span>
+          }
+
+          <button
+            type="button"
+            class="rounded-ui-sm text-ui-dim hover:bg-ui-hover hover:text-ui-text flex size-6 cursor-pointer items-center justify-center border-none bg-transparent transition-colors [&_i]:text-[16px]!"
+            [title]="'feature.turnOrder.next' | transloco"
+            (click)="turnNext()"
+          >
+            <i class="material-icons">chevron_right</i>
+          </button>
+        </span>
+      }
+
+      <div class="relative flex">
+        <button
+          type="button"
+          class="rounded-ui-sm text-ui-text hover:bg-ui-menu-hover hover:text-ui-accent flex h-8 cursor-pointer items-center gap-1 border-none bg-transparent px-1.5 transition-colors [&_i]:text-[20px]!"
+          [class.bg-amber-400/20]="currentPersona() || previewingGuest()"
+          [class.text-amber-500]="currentPersona() || previewingGuest()"
+          [title]="'feature.gmTools.persona.title' | transloco"
+          (click)="togglePersona()"
+        >
+          <i class="material-icons">{{ currentPersona() || previewingGuest() ? 'visibility' : 'visibility_off' }}</i>
+          @if (currentPersona(); as persona) {
+            <span class="max-w-24 truncate text-[12px] font-semibold">{{ persona.name }}</span>
+          } @else if (previewingGuest()) {
+            <span class="max-w-24 truncate text-[12px] font-semibold">{{ 'feature.role.guest' | transloco }}</span>
+          }
+        </button>
+
+        @if (personaOpen()) {
+          <ul
+            class="persona-dropdown border-ui-border-panel bg-ui-panel text-ui-text shadow-ui-md rounded-ui absolute top-[calc(100%+6px)] left-0 z-10 m-0 flex max-h-64 w-52 list-none flex-col gap-0.5 overflow-y-auto border border-solid p-1 [backdrop-filter:blur(24px)_saturate(1.5)] [-webkit-backdrop-filter:blur(24px)_saturate(1.5)]"
+          >
             <li
               class="rounded-ui-sm hover:bg-ui-menu-hover hover:text-ui-accent flex cursor-pointer items-center gap-2 px-2 py-1.5 text-[12px] [&_i]:text-[16px]"
-              [class.text-amber-500]="persona.userId === currentPersona()?.userId"
-              [class.bg-amber-400/20]="persona.userId === currentPersona()?.userId"
-              (click)="selectPersona(persona.userId)"
+              [class.text-ui-accent]="!currentPersona()"
+              [class.bg-ui-accent-bg]="!currentPersona()"
+              (click)="selectPersona(null)"
             >
-              <i class="material-icons">visibility</i>
-              <span class="truncate">{{ persona.name }}</span>
+              <i class="material-icons">shield</i>
+              <span>{{ 'feature.gmTools.persona.self' | transloco }}</span>
             </li>
-          } @empty {
-            <li class="text-ui-dim p-2 text-[11px]">{{ 'feature.gmTools.persona.empty' | transloco }}</li>
-          }
-        </ul>
-      }
-    </div>
+            <li
+              class="rounded-ui-sm hover:bg-ui-menu-hover hover:text-ui-accent flex cursor-pointer items-center gap-2 px-2 py-1.5 text-[12px] [&_i]:text-[16px]"
+              data-testid="persona-guest"
+              [class.text-amber-500]="previewingGuest()"
+              [class.bg-amber-400/20]="previewingGuest()"
+              [title]="'feature.gmTools.persona.guestHint' | transloco"
+              (click)="selectPersona(guestPersona)"
+            >
+              <i class="material-icons">groups</i>
+              <span class="truncate">{{ 'feature.role.guest' | transloco }}</span>
+            </li>
+            @for (persona of personas(); track persona.identifier) {
+              <li
+                class="rounded-ui-sm hover:bg-ui-menu-hover hover:text-ui-accent flex cursor-pointer items-center gap-2 px-2 py-1.5 text-[12px] [&_i]:text-[16px]"
+                [class.text-amber-500]="persona.userId === currentPersona()?.userId"
+                [class.bg-amber-400/20]="persona.userId === currentPersona()?.userId"
+                (click)="selectPersona(persona.userId)"
+              >
+                <i class="material-icons">visibility</i>
+                <span class="truncate">{{ persona.name }}</span>
+              </li>
+            } @empty {
+              <li class="text-ui-dim p-2 text-[11px]">{{ 'feature.gmTools.persona.empty' | transloco }}</li>
+            }
+          </ul>
+        }
+      </div>
 
-    <app-npc-bar></app-npc-bar>
+      <app-npc-bar></app-npc-bar>
+    }
   </div>
 }

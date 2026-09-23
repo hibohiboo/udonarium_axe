@@ -1,9 +1,19 @@
-import { GridType } from '@axe/domain/tabletop/game-table';
+import { CellBits } from '@axe/domain/tabletop/fog/cell-bits';
+import { CellGrid } from '@axe/domain/tabletop/fog/cell-grid';
+import { GridType } from '@axe/domain/tabletop/grid-type';
 import { computeLitCells } from '@axe/domain/tabletop/lit-cells';
-import { Point, Segment, segmentClear } from '@axe/domain/tabletop/los/segments';
+import {
+  Point,
+  Segment,
+  segmentClear,
+  segmentClearBetween,
+  segmentsAbove,
+  TallSegment,
+} from '@axe/domain/tabletop/los/segments';
 import { computeVisibilityPolygon } from '@axe/domain/tabletop/los/visibility-polygon';
 import { surfaceFrame } from '@axe/domain/tabletop/surface-space';
-import { TableSurface } from '@axe/domain/tabletop/tabletop-object';
+import type { TableSurface } from '@axe/domain/tabletop/tabletop-object';
+import { maxLobeScale, VisionLobe, visionLobeScale } from '@axe/domain/tabletop/vision-shape';
 import { VisionType } from '@axe/domain/tabletop/vision-types';
 
 const LIGHT_SAMPLE_COUNT = 64;
@@ -32,10 +42,45 @@ export interface SceneLight {
 export interface SceneVisionSource {
   x: number;
   y: number;
+  /**
+   * How high the eye is, which is how high the ground under it is plus the eye's own height.
+   *
+   * Standing on a tower and being written down as high up are the same thing to an eye, so
+   * they are the same number here, and it is the number the light already carries.
+   */
+  z: number;
   type: VisionType;
   rangePx: number;
   owner: string;
+  /**
+   * Whether the piece is the game master's to run rather than somebody's to play.
+   *
+   * A piece nobody has claimed is the party's eyes, since user ids change between
+   * connections. One marked as the game master's is not: a monster set out on the board
+   * would otherwise clear the fog for the very people it is hiding from.
+   */
+  isNpc?: boolean;
   partyId?: string;
+  sourceId: string;
+  /** Where the piece faces, in degrees, with the lobes measured from it. */
+  direction: number;
+  lobes: readonly VisionLobe[];
+}
+
+/** How far above whatever it stands on an eye, or the lamp it carries, sits. */
+export const EYE_HEIGHT_CELLS = 0.5;
+
+/**
+ * How high a thing on the table is.
+ *
+ * Being written down as high up and having climbed onto something are two ways of arriving at
+ * the same place, and the table already keeps them apart: the first is a number of cells the
+ * reader set, the second is where gravity came to rest. Nothing above the table cares which
+ * of the two got it there, so both are added up here, once, for everything that looks or
+ * shines from a height.
+ */
+export function eyeHeightPx(altitudeCells: number, posZ: number, gridSize: number): number {
+  return (altitudeCells + EYE_HEIGHT_CELLS) * gridSize + posZ;
 }
 
 export interface SceneViewer {
@@ -66,10 +111,7 @@ export interface ShadowShape {
   clipPolygon?: Point[];
 }
 
-export interface LightSegment extends Segment {
-  /** How high what stands here reaches. Left out, it reaches high enough to stop anything. */
-  heightPx?: number;
-}
+export type LightSegment = TallSegment;
 
 export interface WallFace {
   ax: number;
@@ -102,6 +144,7 @@ export interface WallLight {
 
 export interface VisionScene {
   darknessEnabled: boolean;
+  fogEnabled: boolean;
   darknessLevel: number;
   ambientColor: string;
   globalIllumination: number;
@@ -112,7 +155,7 @@ export interface VisionScene {
   heightPx: number;
   lights: SceneLight[];
   visionSources: SceneVisionSource[];
-  sightSegments: Segment[];
+  sightSegments: TallSegment[];
   lightSegments: LightSegment[];
   shadowCasters: ShadowCaster[];
 }
@@ -130,6 +173,36 @@ export interface OverlayShape {
   animation?: string;
 }
 
+/**
+ * What the reader can see and what they remember, in cells.
+ *
+ * `visible` is what their own eyes reach right now and cuts the light back to it, so a lamp
+ * shut in a room stays in that room. `explored` is what the party has been shown, which is
+ * everything on an easy table and only what is in sight on a hard one.
+ */
+export interface OverlayVision {
+  grid: CellGrid;
+  visible: CellBits;
+  explored: CellBits;
+  clipReveals: boolean;
+  fogEnabled: boolean;
+  fogColor: string;
+  /** What ground that has been cleared but cannot be seen now is shaded with. */
+  veilColor: string;
+  veilAlpha: number;
+  unexploredAlpha: number;
+  blurPx: number;
+  /** Whether ground once cleared keeps showing what stands on it. */
+  rememberSeen: boolean;
+  /**
+   * Whether ground once cleared is held lit, so the dark never closes over it again.
+   *
+   * The lamps that cleared it are gone the moment the party walks on, and what they lit is a
+   * room the party has taken. Left to the lamps, it would go black behind them.
+   */
+  clearedStaysLit: boolean;
+}
+
 export interface OverlayPlan {
   darknessAlpha: number;
   darknessColor: string;
@@ -138,6 +211,7 @@ export interface OverlayPlan {
   revealCells?: Point[][];
   glows: OverlayShape[];
   shadows: ShadowShape[];
+  vision?: OverlayVision;
 }
 
 export interface LightBeam {
@@ -182,6 +256,10 @@ function distance(ax: number, ay: number, bx: number, by: number): number {
   return Math.hypot(ax - bx, ay - by);
 }
 
+/**
+ * The unit vector a light points along, from its direction across the table and its pitch up or
+ * down.
+ */
 export function lightAxis(light: SceneLight): { x: number; y: number; z: number } {
   const dir = (light.direction * Math.PI) / 180;
   const pit = (light.pitch * Math.PI) / 180;
@@ -189,23 +267,75 @@ export function lightAxis(light: SceneLight): { x: number; y: number; z: number 
   return { x: Math.cos(dir) * cp, y: Math.sin(dir) * cp, z: Math.sin(pit) };
 }
 
-export function floorRadii(light: SceneLight): { brightFloor: number; dimFloor: number } {
-  const z2 = light.z * light.z;
+/**
+ * How far a light carries across a level surface, once the climb down to it is paid for.
+ *
+ * `planeZ` is the height of the surface being lit, which is the ground for most of a table and
+ * the top of a wall for whatever has climbed onto one. A lamp hung level with a walkway reaches
+ * along it, and reading that walkway against the pool on the ground far below said otherwise.
+ */
+export function floorRadii(light: SceneLight, planeZ = 0): { brightFloor: number; dimFloor: number } {
+  const drop = light.z - planeZ;
+  const z2 = drop * drop;
   return {
     brightFloor: Math.sqrt(Math.max(0, light.brightPx * light.brightPx - z2)),
     dimFloor: Math.sqrt(Math.max(0, light.dimPx * light.dimPx - z2)),
   };
 }
 
-export function computeLightBeam(light: SceneLight): LightBeam | null {
-  if (light.angle >= 360 || light.z < 1) return null;
+/**
+ * Where a light lands on the floor, and how far it carries once it is there.
+ *
+ * The floor and the things standing on it both read the pool from here. Measuring a block by
+ * the plain distance through the air instead would light it apart from the floor: a lamp hung
+ * on a wall is nearer to the block beside it than to the floor below, so the block would be
+ * lit over a floor left dark.
+ */
+export function lightFloorPool(
+  light: SceneLight,
+  planeZ = 0
+): { cx: number; cy: number; brightPx: number; dimPx: number } | null {
+  const { brightFloor, dimFloor } = floorRadii(light, planeZ);
+  if (dimFloor < 1) return null;
+  if (light.angle >= 360) return { cx: light.x, cy: light.y, brightPx: brightFloor, dimPx: dimFloor };
+
+  // A wide cone reaches a surface whichever way its axis is turned: what settles it is the ray
+  // on that side of the spread. The floor below is reached by the lowest ray, which is the axis
+  // tilted down by half of it; a roof above by the highest, tilted up by the same.
+  const above = planeZ > light.z;
+  if (above ? light.pitch + light.angle / 2 <= 0 : light.pitch >= light.angle / 2) return null;
   const axis = lightAxis(light);
-  if (axis.z > -0.05) return null;
+  // Where the axis meets the surface, when it meets it in front of the light; otherwise the
+  // pool lies about the spot below the lamp, which is where a sconce throws it.
+  const towards = above ? axis.z > 0.05 : axis.z < -0.05;
+  const t = towards ? -(light.z - planeZ) / axis.z : 0;
+  const ratio = light.dimPx > 0 ? light.brightPx / light.dimPx : 1;
+  return {
+    cx: light.x + axis.x * t,
+    cy: light.y + axis.y * t,
+    brightPx: dimFloor * ratio,
+    dimPx: dimFloor,
+  };
+}
+
+/**
+ * The shape of the visible beam of a cone light, or null for an all-round light or a beam too short
+ * to draw.
+ *
+ * A beam turned down stops at the floor. It is drawn as three crossed fins about its axis, each
+ * given as a CSS 3D transform.
+ */
+export function computeLightBeam(light: SceneLight): LightBeam | null {
+  if (light.angle >= 360) return null;
+  const axis = lightAxis(light);
   const half = (light.angle * Math.PI) / 360;
   const tanHalf = Math.tan(half);
-  const tFloor = -light.z / axis.z;
-  const slant = Math.min(tFloor, light.dimPx);
-  const height = Math.max(slant, 1);
+  // A beam turned down is cut off where it meets the floor. Turned up or held level it meets
+  // nothing, and runs the length the light carries.
+  const toFloor = axis.z < -0.05 ? -light.z / axis.z : Number.POSITIVE_INFINITY;
+  const slant = Math.min(toFloor, light.dimPx);
+  if (slant < 1) return null;
+  const height = slant;
   const width = Math.max(2 * slant * tanHalf, 1);
   let ux = axis.y;
   let uy = -axis.x;
@@ -242,6 +372,12 @@ export function computeLightBeam(light: SceneLight): LightBeam | null {
   return { width, height, clip: 'polygon(50% 0%, 0% 100%, 100% 100%)', color: light.color, fins };
 }
 
+/**
+ * The glow drawn at an all-round light itself, or null for a cone, a light with no reach, or one
+ * whose bright radius is too large for a glow.
+ *
+ * On a wall the glow carries a transform that lays it flat against that wall.
+ */
 export function computeLightGlow(light: SceneLight, gridSize: number): LightGlow | null {
   if (light.angle < 360 || light.dimPx < 1 || light.brightPx > GLOW_MAX_RADIUS_PX) return null;
   const r = Math.min(gridSize, Math.max(0.4 * gridSize, light.brightPx * 0.3));
@@ -259,6 +395,10 @@ export function computeLightGlow(light: SceneLight, gridSize: number): LightGlow
   return { x: light.x, y: light.y, z: light.z, size, color: light.color, transform };
 }
 
+/**
+ * Whether a point lies within a light's cone, in three dimensions. An all-round light holds
+ * everything.
+ */
 export function withinCone(light: SceneLight, x: number, y: number, pz = 0): boolean {
   if (light.angle >= 360) return true;
   const vx = x - light.x;
@@ -271,22 +411,119 @@ export function withinCone(light: SceneLight, x: number, y: number, pz = 0): boo
   return dot >= Math.cos((light.angle * Math.PI) / 360);
 }
 
+/** Whether a vision type sees without light: darkvision, truesight and thermal do. */
 export function seesInDark(type: VisionType): boolean {
   return type === VisionType.DARKVISION || type === VisionType.TRUESIGHT || type === VisionType.THERMAL;
 }
 
-function occludersFor(scene: VisionScene, light: SceneLight, ignoreShadowCasters = false): Segment[] {
-  const walls = light.ignoreOcclusion ? [] : scene.lightSegments;
-  if (ignoreShadowCasters || !light.castShadows) return walls;
-  const shadowSegments: Segment[] = [];
-  for (const caster of scene.shadowCasters) {
-    if (caster.ownerId === light.sourceId) continue;
-    shadowSegments.push(...caster.segments);
-  }
-  if (shadowSegments.length === 0) return walls;
-  return [...walls, ...shadowSegments];
+/**
+ * What stands in a light's way, worked out once for that light.
+ *
+ * Gathering it afresh on every question asked about the light would build a new array out of
+ * every wall on the table each time. A cone light asks a thousand times over while it feels
+ * for the edge of its own pool, and every piece on the board asks once per light per repaint,
+ * so the gathering would cost more than the answering does.
+ *
+ * It is remembered against the scene and the light together, so it needs no clearing: a
+ * new scene brings a new answer, and when the old scene goes what was remembered of it
+ * goes with it. Against the light alone it would be wrong the moment the same light were
+ * asked about under two scenes.
+ */
+interface LightOccluders {
+  /**
+   * Everything, for a caller that culls in its own way and reckons with heights itself.
+   *
+   * Shading a wall face works out how far up the shadow of each thing climbs, so it wants
+   * everything, including what the lamp is hung above.
+   */
+  all: readonly TallSegment[];
+  /**
+   * What still stands in this lamp's way, given how high the lamp is hung.
+   *
+   * A lamp carried to the top of a tower is above the tower, and above most of what stood in
+   * its way on the ground. The flat reckoning of whether a spot is lit cannot tell, so what
+   * the lamp is over is taken out before it is asked.
+   */
+  overhead: readonly TallSegment[];
+  /** Only what falls within the light's own reach, and still stands in its way. */
+  near: readonly TallSegment[];
 }
 
+type OccluderSlots = { yes?: LightOccluders; no?: LightOccluders };
+
+const occluderMemo = new WeakMap<VisionScene, WeakMap<SceneLight, OccluderSlots>>();
+
+function occludersOf(scene: VisionScene, light: SceneLight, ignoreShadowCasters: boolean): LightOccluders {
+  let byLight = occluderMemo.get(scene);
+  if (!byLight) {
+    byLight = new WeakMap();
+    occluderMemo.set(scene, byLight);
+  }
+  let held = byLight.get(light);
+  if (!held) {
+    held = {};
+    byLight.set(light, held);
+  }
+  const slot = ignoreShadowCasters ? 'yes' : 'no';
+  const known = held[slot];
+  if (known) return known;
+
+  const walls: TallSegment[] = light.ignoreOcclusion ? [] : scene.lightSegments;
+  let all: TallSegment[] = walls;
+  if (!ignoreShadowCasters && light.castShadows) {
+    const shadowSegments: TallSegment[] = [];
+    for (const caster of scene.shadowCasters) {
+      if (caster.ownerId === light.sourceId) continue;
+      shadowSegments.push(...caster.segments);
+    }
+    if (shadowSegments.length > 0) all = [...walls, ...shadowSegments];
+  }
+
+  const overhead = segmentsAbove(all, light.z);
+  const built: LightOccluders = {
+    all,
+    overhead,
+    near: cullSegments(
+      overhead,
+      light.x - light.dimPx,
+      light.y - light.dimPx,
+      light.x + light.dimPx,
+      light.y + light.dimPx
+    ),
+  };
+  held[slot] = built;
+  return built;
+}
+
+/** The segments that could possibly cross a box, which is most of them thrown away. */
+function cullSegments(
+  segments: readonly TallSegment[],
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): TallSegment[] {
+  const kept: TallSegment[] = [];
+  for (const seg of segments) {
+    if (Math.min(seg.x1, seg.x2) > maxX) continue;
+    if (Math.max(seg.x1, seg.x2) < minX) continue;
+    if (Math.min(seg.y1, seg.y2) > maxY) continue;
+    if (Math.max(seg.y1, seg.y2) < minY) continue;
+    kept.push(seg);
+  }
+  return kept;
+}
+
+function occludersFor(scene: VisionScene, light: SceneLight, ignoreShadowCasters = false): readonly TallSegment[] {
+  return occludersOf(scene, light, ignoreShadowCasters).all;
+}
+
+/**
+ * Whether a light reaches a point: within its dim reach and its cone, with nothing standing
+ * between.
+ *
+ * With `ignoreShadowCasters` only walls stand in the way, not the pieces that cast shadows.
+ */
 export function lightReaches(
   scene: VisionScene,
   light: SceneLight,
@@ -297,11 +534,16 @@ export function lightReaches(
 ): boolean {
   if (Math.hypot(x - light.x, y - light.y, pz - light.z) > light.dimPx) return false;
   if (!withinCone(light, x, y, pz)) return false;
-  const occluders = occludersFor(scene, light, ignoreShadowCasters);
+  // The point is inside the light's reach, so nothing outside that reach can stand between.
+  const occluders = occludersOf(scene, light, ignoreShadowCasters).near;
   if (occluders.length === 0) return true;
-  return segmentClear(light.x, light.y, x, y, occluders);
+  return segmentClearBetween(light.x, light.y, light.z, x, y, pz, occluders);
 }
 
+/**
+ * How lit a point is: 1 within some light's bright reach, 0.5 within dim reach only, and never
+ * below the global illumination.
+ */
 export function lightLevelAt(scene: VisionScene, x: number, y: number, ignoreShadowCasters = false, pz = 0): number {
   let level = clamp01(scene.globalIllumination);
   for (const light of scene.lights) {
@@ -312,36 +554,56 @@ export function lightLevelAt(scene: VisionScene, x: number, y: number, ignoreSha
   return level;
 }
 
+/** Whether any light, or the global illumination, lights a point at all. */
 export function isLit(scene: VisionScene, x: number, y: number, ignoreShadowCasters = false, pz = 0): boolean {
   return lightLevelAt(scene, x, y, ignoreShadowCasters, pz) > 0;
 }
 
+/**
+ * Whether a viewer sees through the pieces of this owner: one of the viewer's vision owners when
+ * those are given, otherwise the viewer's own user.
+ *
+ * An empty owner belongs to nobody.
+ */
 export function viewerOwns(viewer: SceneViewer, ownerId: string): boolean {
   if (!ownerId) return false;
   return viewer.visionOwnerIds ? viewer.visionOwnerIds.includes(ownerId) : ownerId === viewer.userId;
 }
 
+/**
+ * Whether a viewer sees through a piece: it is theirs, or it belongs to a party the viewer is in.
+ */
 export function viewerShares(viewer: SceneViewer, ownerId: string, partyId: string | undefined): boolean {
   if (viewerOwns(viewer, ownerId)) return true;
   if (!partyId || !viewer.partyIds) return false;
   return viewer.partyIds.includes(partyId);
 }
 
-function ownedSources(scene: VisionScene, viewer: SceneViewer): SceneVisionSource[] {
+/** The eyes on the table this reader looks through: their own, their party's, or whoever they share with. */
+export function ownedSources(scene: VisionScene, viewer: SceneViewer): SceneVisionSource[] {
   return scene.visionSources.filter(
     (source) => viewerShares(viewer, source.owner, source.partyId) && source.type !== VisionType.BLIND
   );
 }
 
+/**
+ * The shadows pieces throw onto one wall face, one for each light and piece in front of the face.
+ *
+ * A shadow is left out when the light does not reach the piece, or when the wall is already in
+ * shade that high at that spot.
+ */
 export function computeWallSilhouettes(scene: VisionScene, face: WallFace, casterHeightPx: number): WallSilhouette[] {
   const result: WallSilhouette[] = [];
   const dax = face.bx - face.ax;
   const day = face.by - face.ay;
   const len = Math.hypot(dax, day);
   if (len < 1) return result;
+  const ux = dax / len;
+  const uy = day / len;
 
   for (const light of scene.lights) {
     if ((light.x - face.ax) * face.nx + (light.y - face.ay) * face.ny <= 0) continue;
+    let occluders: LightSegment[] | null = null;
     for (const caster of scene.shadowCasters) {
       if (caster.ownerId === light.sourceId) continue;
       if ((caster.x - face.ax) * face.nx + (caster.y - face.ay) * face.ny <= 0) continue;
@@ -367,6 +629,9 @@ export function computeWallSilhouettes(scene: VisionScene, face: WallFace, caste
       const center = s * len;
       if (center + width / 2 <= 0 || center - width / 2 >= len) continue;
       const height = Math.min(casterHeightPx * t, face.heightPx);
+      occluders ??= nearbyOccluders(occludersFor(scene, light, true), light, face);
+      const at = Math.min(Math.max(center, 0), len);
+      if (shadeHeightAt(light, face, occluders, ux, uy, at) >= height) continue;
       result.push({ localX: center, width, height, alpha: 0.75, imageUrl: caster.imageUrl });
     }
   }
@@ -501,6 +766,13 @@ function faceShadowLine(
   return pruneFlat(line);
 }
 
+/**
+ * The pools of light falling on one wall face, one for each light in front of it and near enough to
+ * reach it.
+ *
+ * Where something in the way shades part of the face, the pool carries the line along the face at
+ * which the lit part begins.
+ */
 export function computeWallLights(scene: VisionScene, face: WallFace): WallLight[] {
   const result: WallLight[] = [];
   const dax = face.bx - face.ax;
@@ -536,6 +808,10 @@ export function computeWallLights(scene: VisionScene, face: WallFace): WallLight
   return result;
 }
 
+/**
+ * How dark the overlay is for a viewer: the table's darkness less the global illumination, and much
+ * lighter for the game master. 0 when darkness is off.
+ */
 export function darknessAlphaFor(scene: VisionScene, viewer: SceneViewer): number {
   if (!scene.darknessEnabled) return 0;
   const global = clamp01(scene.globalIllumination);
@@ -543,23 +819,71 @@ export function darknessAlphaFor(scene: VisionScene, viewer: SceneViewer): numbe
   return viewer.isGameMaster ? base * GM_DIM_FACTOR : base;
 }
 
-export function isPointVisible(scene: VisionScene, x: number, y: number, viewer: SceneViewer): boolean {
+/**
+ * Whether a viewer can see a point through the pieces they see through.
+ *
+ * The game master sees everything, and a viewer with no such pieces sees whatever is lit.
+ */
+export function isPointVisible(scene: VisionScene, x: number, y: number, viewer: SceneViewer, z = 0): boolean {
   if (viewer.isGameMaster) return true;
+  return isPointVisibleFrom(scene, x, y, ownedSources(scene, viewer), z);
+}
 
-  const sources = ownedSources(scene, viewer);
-  const lit = isLit(scene, x, y, true);
+/**
+ * A table with the dark switched off has nothing to be lit by, so everything counts as lit and
+ * what is left to settle a look is the walls in the way and which way the piece is facing.
+ */
+export function isPointVisibleFrom(
+  scene: VisionScene,
+  x: number,
+  y: number,
+  sources: readonly SceneVisionSource[],
+  z = 0
+): boolean {
+  const lit = !scene.darknessEnabled || isLit(scene, x, y, true, z);
   if (sources.length === 0) return lit;
 
   for (const source of sources) {
-    const withinRange = source.rangePx > 0 && distance(x, y, source.x, source.y) <= source.rangePx;
+    const scale = visionLobeScale(source.lobes, source.direction, source.x, source.y, x, y);
+    if (scale <= 0) continue;
+    // The range on a piece is how far it sees with nothing to see by. Ground a lamp reaches
+    // is seen as far as the lamp carries, so a torch-bearer with two cells of night sight
+    // still sees the whole of the room its torch lights. With no dark on the table there is
+    // nothing to see by or without, and the range is the whole of the limit.
+    const withinRange = source.rangePx > 0 && distance(x, y, source.x, source.y) <= source.rangePx * scale;
+    if (!scene.darknessEnabled && source.rangePx > 0 && !withinRange) continue;
     if (source.type === VisionType.TRUESIGHT && withinRange) return true;
-    if (!segmentClear(source.x, source.y, x, y, scene.sightSegments)) continue;
+    const between = segmentsAbove(scene.sightSegments, source.z);
+    if (!segmentClearBetween(source.x, source.y, source.z, x, y, z, between)) continue;
     if (lit) return true;
     if (seesInDark(source.type) && withinRange) return true;
   }
   return false;
 }
 
+/** What a thing is worth to the eye before any light falls on it. */
+const SEEN_BRIGHTNESS = 0.4;
+
+/**
+ * How much of a light is left at a distance from it.
+ *
+ * Full out to the bright radius, then away to nothing at the edge of the dim one. The middle
+ * of that fall is a half.
+ */
+function lightFalloff(reach: number, brightPx: number, dimPx: number): number {
+  if (reach <= brightPx) return 1;
+  const ring = dimPx - brightPx;
+  if (ring <= 0) return 0;
+  return clamp01(1 - (reach - brightPx) / ring);
+}
+
+/**
+ * How lit a thing of this radius is, from 0 to 1, fading from full within a light's bright reach to
+ * nothing at the edge of its dim reach.
+ *
+ * The edge of the thing nearest the light counts, the reach is measured on the surface at height
+ * `pz`, and the level never falls below the global illumination.
+ */
 export function objectLightLevel(
   scene: VisionScene,
   x: number,
@@ -570,44 +894,57 @@ export function objectLightLevel(
 ): number {
   let level = clamp01(scene.globalIllumination);
   for (const light of scene.lights) {
-    const dx = light.x - x;
-    const dy = light.y - y;
-    const dist = Math.hypot(dx, dy, light.z - pz);
-    if (dist - radiusPx > light.dimPx) continue;
+    // The surface the thing is standing on, which is what the light has to reach across.
+    const pool = lightFloorPool(light, pz);
+    if (!pool) continue;
+    const dx = pool.cx - x;
+    const dy = pool.cy - y;
+    const dist = Math.hypot(dx, dy);
+    if (dist - radiusPx > pool.dimPx) continue;
     let sx = x;
     let sy = y;
-    const dist2d = Math.hypot(dx, dy);
-    if (radiusPx > 0 && dist2d > radiusPx) {
-      const u = radiusPx / dist2d;
+    if (radiusPx > 0 && dist > radiusPx) {
+      const u = radiusPx / dist;
       sx = x + dx * u;
       sy = y + dy * u;
     }
     if (!lightReaches(scene, light, sx, sy, ignoreShadowCasters, pz)) continue;
-    const reach = Math.hypot(light.x - sx, light.y - sy, light.z - pz);
-    const contribution = reach <= light.brightPx ? 1 : 0.5;
+    const contribution = lightFalloff(Math.hypot(pool.cx - sx, pool.cy - sy), pool.brightPx, pool.dimPx);
     if (contribution > level) level = contribution;
   }
   return level;
 }
 
+/**
+ * How bright to draw a thing for a viewer, from the level the darkness overlay leaves up to 1.
+ *
+ * What is lit or in the viewer's sight starts from 0.4 and the light carries it the rest of the
+ * way; what is neither stays at the overlay's level. With no darkness it is always 1.
+ */
 export function objectBrightnessFor(
   scene: VisionScene,
   viewer: SceneViewer,
   x: number,
   y: number,
   radiusPx: number,
-  ignoreShadowCasters = false
+  ignoreShadowCasters = false,
+  pz = 0
 ): number {
   const base = 1 - darknessAlphaFor(scene, viewer);
-  const level = objectLightLevel(scene, x, y, radiusPx, ignoreShadowCasters);
+  // Nothing below can come out under the base, so a table with no dark in it is at full
+  // brightness wherever the light and the sight lines happen to fall.
+  if (base >= 1) return 1;
+  const level = objectLightLevel(scene, x, y, radiusPx, ignoreShadowCasters, pz);
   if (level >= 1) return 1;
-  if (level > 0) return Math.max(base, 0.7);
-  if (isPointVisible(scene, x, y, viewer)) return Math.max(base, 0.4);
-  return base;
+  // Lit or merely in sight, a thing is worth four tenths before any light is added to it, and
+  // the light carries it the rest of the way. Nothing in between is a step.
+  const lit = level > 0 || isPointVisible(scene, x, y, viewer, pz);
+  const floor = lit ? SEEN_BRIGHTNESS : base;
+  return Math.max(base, floor + (1 - floor) * level);
 }
 
 function lightClipPolygon(scene: VisionScene, light: SceneLight, radius: number = light.dimPx): Point[] | undefined {
-  const occluders = occludersFor(scene, light, true);
+  const occluders = occludersOf(scene, light, true).overhead;
   if (occluders.length === 0) return undefined;
   return computeVisibilityPolygon(light.x, light.y, occluders, radius, LIGHT_SAMPLE_COUNT);
 }
@@ -616,12 +953,17 @@ function coneFloorFootprint(
   scene: VisionScene,
   light: SceneLight
 ): { cx: number; cy: number; maxR: number; points: Point[] } | null {
-  const axis = lightAxis(light);
-  if (axis.z > -0.05) return null;
-  const t = -light.z / axis.z;
-  const cx = light.x + axis.x * t;
-  const cy = light.y + axis.y * t;
-  const occluders = occludersFor(scene, light, true);
+  const pool = lightFloorPool(light);
+  if (!pool) return null;
+  const { cx, cy } = pool;
+  // The pool can sit off to one side of the light, so the box has to hold both.
+  const occluders = cullSegments(
+    occludersOf(scene, light, true).overhead,
+    Math.min(light.x, cx - light.dimPx),
+    Math.min(light.y, cy - light.dimPx),
+    Math.max(light.x, cx + light.dimPx),
+    Math.max(light.y, cy + light.dimPx)
+  );
   const points: Point[] = [];
   let maxR = 0;
   for (let i = 0; i < LIGHT_SAMPLE_COUNT; i++) {
@@ -722,7 +1064,15 @@ function addLightShadows(
   }
 }
 
-export function computeOverlayPlan(scene: VisionScene, viewer: SceneViewer): OverlayPlan {
+/**
+ * Everything the darkness overlay draws for one viewer: the darkness, the pool each light reveals
+ * with its glow and the shadows pieces cast in it, and the reach of the viewer's own dark-seeing
+ * pieces.
+ *
+ * The game master's plan leaves out that sight, since the game master sees everything. When the
+ * scene snaps light to the grid, the lit cells are included too.
+ */
+export function computeOverlayPlan(scene: VisionScene, viewer: SceneViewer, vision?: OverlayVision): OverlayPlan {
   const glows: OverlayShape[] = [];
   const reveals: OverlayShape[] = [];
   const shadows: ShadowShape[] = [];
@@ -740,33 +1090,34 @@ export function computeOverlayPlan(scene: VisionScene, viewer: SceneViewer): Ove
   if (!isGm) {
     for (const source of ownedSources(scene, viewer)) {
       if (!seesInDark(source.type) || source.rangePx <= 0) continue;
+      const reach = source.rangePx * maxLobeScale(source.lobes);
+      if (reach < 1) continue;
       const clipPolygon =
         source.type === VisionType.TRUESIGHT
           ? undefined
-          : computeVisibilityPolygon(source.x, source.y, scene.sightSegments, source.rangePx, VISION_SAMPLE_COUNT);
-      reveals.push({
-        x: source.x,
-        y: source.y,
-        brightPx: source.rangePx,
-        dimPx: source.rangePx,
-        angle: 360,
-        direction: 0,
-        color: scene.ambientColor,
-        full: true,
-        clipPolygon,
-      });
-      if (source.type === VisionType.THERMAL) {
-        glows.push({
+          : computeVisibilityPolygon(
+              source.x,
+              source.y,
+              segmentsAbove(scene.sightSegments, source.z),
+              reach,
+              VISION_SAMPLE_COUNT
+            );
+      for (const lobe of source.lobes) {
+        const radius = source.rangePx * lobe.rangeScale;
+        if (radius < 1) continue;
+        const shape: OverlayShape = {
           x: source.x,
           y: source.y,
-          brightPx: source.rangePx,
-          dimPx: source.rangePx,
-          angle: 360,
-          direction: 0,
-          color: THERMAL_COLOR,
-          full: false,
+          brightPx: radius,
+          dimPx: radius,
+          angle: lobe.angle,
+          direction: source.direction + lobe.direction,
+          color: scene.ambientColor,
+          full: true,
           clipPolygon,
-        });
+        };
+        reveals.push(shape);
+        if (source.type === VisionType.THERMAL) glows.push({ ...shape, color: THERMAL_COLOR, full: false });
       }
     }
   }
@@ -784,5 +1135,92 @@ export function computeOverlayPlan(scene: VisionScene, viewer: SceneViewer): Ove
       : [],
     glows,
     shadows,
+    vision,
   };
+}
+
+/**
+ * Whether two plans draw the same picture.
+ *
+ * The scene is built again whenever something on the table moves, and the plan with it, though
+ * most of what moves is neither a light nor the reader's own eyes. Drawn again, the same plan lays
+ * the whole overlay down for nothing.
+ */
+export function sameOverlayPlan(a: OverlayPlan, b: OverlayPlan): boolean {
+  return (
+    a.darknessAlpha === b.darknessAlpha &&
+    a.darknessColor === b.darknessColor &&
+    a.baseRevealAlpha === b.baseRevealAlpha &&
+    sameList(a.reveals, b.reveals, sameOverlayShape) &&
+    sameList(a.glows, b.glows, sameOverlayShape) &&
+    sameList(a.shadows, b.shadows, sameShadowShape) &&
+    sameList(a.revealCells ?? [], b.revealCells ?? [], samePoints) &&
+    sameOverlayVision(a.vision, b.vision)
+  );
+}
+
+/** Whether two accounts of what the reader sees and remembers cover the same cells in the same way. */
+export function sameOverlayVision(a: OverlayVision | undefined, b: OverlayVision | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.grid.type === b.grid.type &&
+    a.grid.cols === b.grid.cols &&
+    a.grid.rows === b.grid.rows &&
+    a.grid.sizePx === b.grid.sizePx &&
+    a.clipReveals === b.clipReveals &&
+    a.fogEnabled === b.fogEnabled &&
+    a.fogColor === b.fogColor &&
+    a.veilColor === b.veilColor &&
+    a.veilAlpha === b.veilAlpha &&
+    a.unexploredAlpha === b.unexploredAlpha &&
+    a.blurPx === b.blurPx &&
+    a.rememberSeen === b.rememberSeen &&
+    a.clearedStaysLit === b.clearedStaysLit &&
+    a.visible.equals(b.visible) &&
+    a.explored.equals(b.explored)
+  );
+}
+
+function sameList<T>(a: readonly T[], b: readonly T[], same: (x: T, y: T) => boolean): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!same(a[i], b[i])) return false;
+  return true;
+}
+
+function samePoints(a: readonly Point[] | undefined, b: readonly Point[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i].x !== b[i].x || a[i].y !== b[i].y) return false;
+  return true;
+}
+
+function sameOverlayShape(a: OverlayShape, b: OverlayShape): boolean {
+  return (
+    a.x === b.x &&
+    a.y === b.y &&
+    a.brightPx === b.brightPx &&
+    a.dimPx === b.dimPx &&
+    a.angle === b.angle &&
+    a.direction === b.direction &&
+    a.color === b.color &&
+    a.full === b.full &&
+    a.animation === b.animation &&
+    samePoints(a.clipPolygon, b.clipPolygon)
+  );
+}
+
+function sameShadowShape(a: ShadowShape, b: ShadowShape): boolean {
+  return (
+    a.x === b.x &&
+    a.y === b.y &&
+    a.fx === b.fx &&
+    a.fy === b.fy &&
+    a.width === b.width &&
+    a.color === b.color &&
+    a.imageUrl === b.imageUrl &&
+    samePoints(a.points, b.points) &&
+    samePoints(a.clipPolygon, b.clipPolygon)
+  );
 }

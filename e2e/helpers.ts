@@ -23,13 +23,63 @@ export async function openFabMenu(page: Page) {
 }
 
 /**
+ * 左上 FAB のメニューを閉じる。開いている時のみクリックする。
+ * 開いたままだと画面左側のパネルにポインタが届かない。
+ */
+export async function closeFabMenu(page: Page) {
+  const fabBtn = page.getByRole('button', { name: /メニューを(開く|閉じる)/ });
+  if ((await fabBtn.getAttribute('aria-expanded')) === 'true') {
+    await fabBtn.click();
+    await expect(fabBtn).toHaveAttribute('aria-expanded', 'false');
+  }
+}
+
+/**
+ * FAB を開き、最下段の「表示」からこの端末の表示設定の小窓を開く。開いた小窓を返す。
+ */
+export function openSeatDisplay(page: Page): Promise<Locator> {
+  return openFabSubmenu(page, 'fab-display', 'seat-display');
+}
+
+/**
+ * FAB を開き、最下段の「ウィジェット」からウィジェットの小窓を開く。開いた小窓を返す。
+ */
+export function openSeatWidgets(page: Page): Promise<Locator> {
+  return openFabSubmenu(page, 'fab-widgets', 'seat-widgets');
+}
+
+/**
+ * FAB を開き、最下段の「セーブ&ロード」から保存と読込の小窓を開く。開いた小窓を返す。
+ */
+export function openSaveLoad(page: Page): Promise<Locator> {
+  return openFabSubmenu(page, 'fab-save-load', 'save-load');
+}
+
+async function openFabSubmenu(page: Page, openerTestId: string, menuTestId: string): Promise<Locator> {
+  await openFabMenu(page);
+  const panel = page.locator(`[data-testid="${menuTestId}"]`);
+  if (!(await panel.isVisible())) await page.locator(`[data-testid="${openerTestId}"]`).click();
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+/**
  * FAB を開いた上で data-label のメニュー項目をクリックする。
  * 既存テストで `getByText('インベントリ')` などを呼んでいた箇所の置換用。
  */
 export async function openPanel(page: Page, dataLabel: string) {
   await openFabMenu(page);
+  const submenu = Object.entries(SUBMENU_LABELS).find(([, labels]) => labels.includes(dataLabel))?.[0];
+  if (submenu) await openFabSubmenu(page, `fab-entry-${submenu}`, `fab-submenu-${submenu}`);
   await page.locator(`[data-label="${dataLabel}"]`).click();
 }
+
+/** FAB の項目が開く小窓と、その中にある項目。小窓の中の項目は、押す前に小窓を開く。 */
+const SUBMENU_LABELS: Readonly<Record<string, readonly string[]>> = {
+  table: ['テーブル設定', 'マップエディター', 'マップ生成', '卓上ディスプレイ', 'ノベルモード'],
+  gameResources: ['インベントリ', 'バフマネージャー', '状態異常', 'ダイス表設定', '手札'],
+  media: ['画像', 'ジュークボックス', 'カットイン', 'エフェクト'],
+};
 
 /**
  * チャットウィンドウ右上の歯車（details/summary）を開いて、
@@ -88,4 +138,28 @@ export async function createDiceSymbol(page: Page) {
   await expect(menu.getByText('D6')).toBeVisible({ timeout: 5000 });
   await menu.getByText('D6').click();
   await expect(page.locator('dice-symbol').first()).toBeAttached({ timeout: 10000 });
+}
+
+/**
+ * ノベルモードの発言キャラクターを選ぶ。
+ * ng-select は候補パネルを body 直下の CDK オーバーレイに出すので、
+ * visual-novel-overlay スコープのロケータでは届かない。
+ */
+export async function openVnSpeakerList(page: Page): Promise<Locator> {
+  await page.locator('visual-novel-overlay [data-testid="vn-speaker"]').click();
+  const panel = page.locator('.ng-dropdown-panel');
+  await expect(panel).toBeVisible({ timeout: 5000 });
+  return panel;
+}
+
+export async function selectVnSpeaker(page: Page, name: string) {
+  const panel = await openVnSpeakerList(page);
+  await page.locator('visual-novel-overlay [data-testid="vn-speaker"] input').fill(name);
+  await panel.getByRole('option', { name, exact: true }).click();
+  await expect(panel).toBeHidden({ timeout: 5000 });
+}
+
+/** ノベルモードの発言入力欄。ng-select も input を持つので data-testid で拾う。 */
+export function vnMessageInput(page: Page): Locator {
+  return page.locator('visual-novel-overlay [data-testid="vn-message"]');
 }

@@ -1,10 +1,11 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
 import { RolePermissionService } from '@axe/application/permission/role-permission.service';
+import { ReplayEditorService } from '@axe/application/replay/replay-editor.service';
 import { ReplayLibraryService } from '@axe/application/replay/replay-library.service';
 import { ReplayPlaybackService } from '@axe/application/replay/replay-playback.service';
 import { ReplayRecorderService } from '@axe/application/replay/replay-recorder.service';
-import { confirmDialog } from '@axe/core/input/confirm-dialog';
+import { ConfirmService } from '@axe/application/ui/confirm.service';
 import type { ReplayRecordingMeta } from '@axe/core/storage/replay-log-store';
 import { formatSnapshotByteSize, formatSnapshotSavedAt } from '@axe/features/room-archive/snapshot-format';
 import { TranslocoModule } from '@jsverse/transloco';
@@ -19,8 +20,10 @@ export class ReplayRecordingListComponent {
   private readonly recorder = inject(ReplayRecorderService);
   private readonly library = inject(ReplayLibraryService);
   private readonly playback = inject(ReplayPlaybackService);
+  private readonly editor = inject(ReplayEditorService);
   private readonly rolePermission = inject(RolePermissionService);
   private readonly t = inject(TRANSLATE_FN);
+  private readonly confirm = inject(ConfirmService);
 
   protected readonly recordings = this.recorder.recordings;
   protected readonly isBusy = this.library.isBusy;
@@ -50,7 +53,19 @@ export class ReplayRecordingListComponent {
     return this.isRecording() && meta.endedAt === null;
   }
 
+  /**
+   * Opens a recording, or opens the open one again from its start.
+   *
+   * While editing, the recording being edited stays as it is, and before another is opened the
+   * edits are thrown away, once confirmed when there are any; the list would otherwise go on
+   * showing the old recording's edited rows.
+   */
   protected async open(meta: ReplayRecordingMeta): Promise<void> {
+    if (this.editor.isEditing()) {
+      if (meta.id === this.openedId()) return;
+      if (this.editor.isDirty() && !(await this.confirm.ask(this.t('feature.replay.editor.discardConfirm')))) return;
+      this.editor.cancel();
+    }
     await this.playback.open(meta.id);
   }
 
@@ -73,7 +88,12 @@ export class ReplayRecordingListComponent {
 
   protected async remove(meta: ReplayRecordingMeta): Promise<void> {
     if (!this.canEdit) return;
-    if (!confirmDialog(this.t('feature.replay.panel.removeConfirm', { startedAt: this.startedAtLabel(meta) }))) return;
+    const asked = await this.confirm.ask({
+      message: this.t('feature.replay.panel.removeConfirm', { startedAt: this.startedAtLabel(meta) }),
+      okLabel: this.t('common.button.delete'),
+      danger: true,
+    });
+    if (!asked) return;
     if (this.openedId() === meta.id) await this.playback.close();
     await this.recorder.remove(meta.id);
   }

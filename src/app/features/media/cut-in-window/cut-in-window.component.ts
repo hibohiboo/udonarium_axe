@@ -11,6 +11,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { YouTubePlayer } from '@angular/youtube-player';
+import { type CutInSoundHandle, CutInSoundService } from '@axe/application/media/cut-in-sound.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { ModalService } from '@axe/application/ui/modal.service';
 import { PanelService } from '@axe/application/ui/panel.service';
@@ -20,15 +21,25 @@ import { ImageFile } from '@axe/core/storage/image-file';
 import { ImageStorage } from '@axe/core/storage/image-storage';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { AudioTag } from '@axe/domain/media/audio-tag';
-import { CutIn } from '@axe/domain/media/cut-in';
+import { CutIn, cutInPanelChrome } from '@axe/domain/media/cut-in';
 import { CutInLauncher } from '@axe/domain/media/cut-in-launcher';
+import { CutInLayer } from '@axe/domain/media/cut-in-layer';
+import { cutInPlaybackMs } from '@axe/domain/media/cut-in-playback-window';
+import { CutInScene } from '@axe/domain/media/cut-in-scene';
+import { CutInStageComponent } from '@axe/features/media/cut-in-stage/cut-in-stage.component';
 import { SafePipe } from '@axe/ui/pipes/safe.pipe';
+
+interface CutInVideoTarget {
+  setVolume: (volume: number) => void;
+  playVideo: () => void;
+  seekTo?: (seconds: number, allowSeekAhead: boolean) => void;
+}
 
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'app-cut-in-window',
   templateUrl: './cut-in-window.component.html',
-  imports: [YouTubePlayer, SafePipe],
+  imports: [YouTubePlayer, SafePipe, CutInStageComponent],
 })
 export class CutInWindowComponent {
   private readonly modalService = inject(ModalService);
@@ -37,9 +48,16 @@ export class CutInWindowComponent {
   private readonly audioStorage = inject(AudioStorage);
   private readonly imageStorage = inject(ImageStorage);
   private readonly objectChange = inject(ObjectChangeService);
+  private readonly cutInSound = inject(CutInSoundService);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly cutInArea = viewChild<ElementRef<HTMLDivElement>>('cutInArea');
+  /**
+   * The size of the cut-in area, kept as it changes. Reading it off the element instead makes the
+   * browser lay the whole page out again on every check of the window, which is every change to
+   * the room while a cut-in is showing.
+   */
+  private readonly areaSize = signal({ width: 640, height: 340 });
   readonly videoPlayer = viewChild<YouTubePlayer>('videoPlayerComponent');
 
   left = 0;
@@ -48,8 +66,16 @@ export class CutInWindowComponent {
   height = 150;
 
   readonly audioPlayer: AudioPlayer = new AudioPlayer();
+  /** This window's own scene sounds, so closing it says nothing about anyone else's. */
+  private sceneSound: CutInSoundHandle | null = null;
   private cutInTimeOut: ReturnType<typeof setTimeout> | null = null;
   timerCheckWindowSize: ReturnType<typeof setTimeout> | null = null;
+  private resolveFirstRender: (() => void) | null = null;
+  private readonly firstRender = new Promise<void>((resolve) => {
+    this.resolveFirstRender = resolve;
+  });
+  private readyVideoTarget: CutInVideoTarget | null = null;
+  private destroyed = false;
 
   constructor() {
     this.objectChange.startCutIn$.subscribe((event) => {
@@ -85,6 +111,8 @@ export class CutInWindowComponent {
       }
     }, this.destroyRef);
     afterNextRender(() => {
+      this.resolveFirstRender?.();
+      this.resolveFirstRender = null;
       if (this.cutIn) {
         setTimeout(() => {
           this.moveCutInPos();
@@ -95,7 +123,21 @@ export class CutInWindowComponent {
       const vol = this.videoVolumeSig();
       this.videoPlayer()?.setVolume(vol);
     });
+    effect((onCleanup) => {
+      const area = this.cutInArea()?.nativeElement;
+      if (!area || typeof ResizeObserver !== 'function') return;
+      const observer = new ResizeObserver((entries) => {
+        const rect = entries[0]?.contentRect;
+        if (rect) this.areaSize.set({ width: Math.round(rect.width), height: Math.round(rect.height) });
+      });
+      observer.observe(area);
+      onCleanup(() => observer.disconnect());
+    });
     this.destroyRef.onDestroy(() => {
+      this.destroyed = true;
+      this.resolveFirstRender?.();
+      this.resolveFirstRender = null;
+      this.readyVideoTarget = null;
       if (this.cutInTimeOut) {
         clearTimeout(this.cutInTimeOut);
         this.cutInTimeOut = null;
@@ -125,6 +167,23 @@ export class CutInWindowComponent {
 
   isTest = false;
   forceNoLoop = false;
+  private readonly audioEnabledState = signal(true);
+  /**
+   * Whether this window plays the cut-in's sound.
+   *
+   * A cut-in repeated towards several sides of the screen opens a window for each, and only the
+   * main one has sound, so it is heard once. A window without sound also mutes its video.
+   */
+  get audioEnabled(): boolean {
+    return this.audioEnabledState();
+  }
+  set audioEnabled(value: boolean) {
+    this.audioEnabledState.set(value);
+  }
+  panelLayout: { left: number; top: number; width: number; height: number } | null = null;
+  playbackStartedAtMs: number | null = null;
+  playbackOffsetMs = 0;
+  protected readonly playbackStarted = signal(false);
 
   cutIn: CutIn | null = null;
   playListId = '';
@@ -137,6 +196,15 @@ export class CutInWindowComponent {
     return this.audioStorage.audios.filter((audio) => !audio.isHidden);
   });
 
+  /** The layers this cut-in is built from, if it is built from any. */
+  readonly scene = computed<CutInScene | null>(() => {
+    if (!this.cutIn) return null;
+    this.objectChange.collectionOf(CutInScene.aliasName)();
+    this.objectChange.collectionOf(CutInLayer.aliasName)();
+    const scene = this.cutIn.scene;
+    return scene && scene.layers.length > 0 ? scene : null;
+  });
+
   readonly cutInImageUrl = computed(() => {
     this.objectChange.fileVersion();
     if (!this.cutIn) return ImageFile.Empty.url;
@@ -145,16 +213,43 @@ export class CutInWindowComponent {
     const file = this.imageStorage.get(this.cutIn.imageIdentifier);
     return file?.url ?? ImageFile.Empty.url;
   });
+  /** The room's cut-in launcher. */
   get cutInLauncher(): CutInLauncher {
     return this.objectStore.get<CutInLauncher>('CutInLauncher')!;
   }
 
+  /** Every cut-in in the room. */
   getCutIns(): CutIn[] {
     return this.objectStore.getObjects(CutIn);
   }
 
-  startCutIn() {
-    if (!this.cutIn) return;
+  /**
+   * Waits for this face to have a DOM and for its ordinary images to be decoded.
+   * YouTube readiness is deliberately not part of this barrier; it joins the shared
+   * clock when its iframe says it is ready.
+   */
+  async prepareCutIn(): Promise<void> {
+    await this.firstRender;
+    if (this.destroyed) return;
+
+    const images = Array.from(this.cutInArea()?.nativeElement.querySelectorAll('img') ?? []);
+    await Promise.allSettled(
+      images.map((image) => (typeof image.decode === 'function' ? image.decode() : Promise.resolve()))
+    );
+  }
+
+  /**
+   * Starts the cut-in's picture or video and its sounds, and closes the window when its playback
+   * time runs out.
+   *
+   * Given the moment a shared start was taken, playback joins that far in, so the windows opened
+   * for one cut-in stay together; the scene sounds can be given an offset of their own. Does
+   * nothing without a cut-in or once the window is gone.
+   */
+  startCutIn(startedAtMs?: number, sceneSoundOffsetMs?: number) {
+    if (!this.cutIn || this.destroyed) return;
+    this.playbackStartedAtMs = startedAtMs ?? null;
+    this.playbackOffsetMs = startedAtMs === undefined ? 0 : Math.max(0, Date.now() - startedAtMs);
 
     if (this.cutIn.videoId) {
       this._videoId = this.cutIn.videoId;
@@ -162,40 +257,66 @@ export class CutInWindowComponent {
     }
 
     const audio = this.cutIn.audio;
-    if (audio) {
+    if (audio && this.audioEnabled) {
       const isSE = AudioTag.get(this.cutIn.audioIdentifier)?.tag === 'SE';
       this.audioPlayer.volumeType = isSE ? VolumeType.SE : VolumeType.MASTER;
       this.audioPlayer.loop = this.cutIn.isLoop;
       if (!this.cutIn.videoId) {
         this.audioPlayer.play(audio);
+        if (this.playbackOffsetMs > 0) this.audioPlayer.seekTo(this.playbackOffsetMs / 1000);
       }
     }
 
-    if (this.cutIn.outTime > 0) {
-      this.cutInTimeOut = setTimeout(() => {
-        this.cutInTimeOut = null;
-        this.panelService.close();
-      }, this.cutIn.outTime * 1000);
+    const scene = this.cutIn.scene;
+    if (scene && scene.layers.length > 0 && this.audioEnabled) {
+      this.sceneSound = this.cutInSound.play(scene, sceneSoundOffsetMs ?? this.playbackOffsetMs, scene.sceneLoop);
+    }
+
+    this.playbackStarted.set(true);
+    if (this.readyVideoTarget) this.startVideo(this.readyVideoTarget);
+
+    const playbackMs = cutInPlaybackMs(this.cutIn, this.cutIn.scene);
+    if (playbackMs > 0) {
+      this.cutInTimeOut = setTimeout(
+        () => {
+          this.cutInTimeOut = null;
+          this.panelService.close();
+        },
+        Math.max(0, playbackMs - this.playbackOffsetMs)
+      );
     }
   }
 
+  /** Stops this window's sound and scene sounds. */
   stopCutIn() {
     this.audioPlayer.stop();
+    this.sceneSound?.stop();
+    this.sceneSound = null;
   }
 
+  /**
+   * Sizes and places the panel: to the layout handed in when there is one, and otherwise to the
+   * cut-in's own size at its position within the browser window.
+   */
   moveCutInPos() {
-    if (this.cutIn) {
+    if (this.panelLayout) {
+      this.width = this.panelLayout.width;
+      this.height = this.panelLayout.height;
+      this.left = this.panelLayout.left;
+      this.top = this.panelLayout.top;
+    } else if (this.cutIn) {
+      const chrome = cutInPanelChrome(this.cutIn);
       const cutin_w = this.cutIn.width;
       const cutin_h = this.cutIn.height;
       let margin_w = window.innerWidth - cutin_w;
-      let margin_h = window.innerHeight - cutin_h - 25;
+      let margin_h = window.innerHeight - cutin_h - chrome;
       if (margin_w < 0) margin_w = 0;
       if (margin_h < 0) margin_h = 0;
       const margin_x = (margin_w * this.cutIn.x_pos) / 100;
       const margin_y = (margin_h * this.cutIn.y_pos) / 100;
 
       this.width = cutin_w;
-      this.height = cutin_h + 25;
+      this.height = cutin_h + chrome;
       this.left = margin_x;
       this.top = margin_y;
     }
@@ -205,6 +326,10 @@ export class CutInWindowComponent {
     this.panelService.top = this.top;
   }
 
+  /**
+   * Grows the panel to the minimum size a video cut-in needs; does nothing for a cut-in without a
+   * video.
+   */
   chkeWindowMinSize() {
     if (!this.cutIn || !this.videoId) return;
     if (this.panelService.width < this.cutIn.minSizeWidth(true)) {
@@ -215,6 +340,7 @@ export class CutInWindowComponent {
     }
   }
 
+  /** The YouTube video the cut-in plays, or empty when it plays none. */
   get videoId(): string {
     if (!this.cutIn) return '';
     if (this._videoId === '') this._videoId = this.cutIn.videoId;
@@ -223,26 +349,67 @@ export class CutInWindowComponent {
 
   readonly videoVolumeSig = computed(() => {
     if (this.cutIn) this.objectChange.versionOf(this.cutIn.identifier)();
-    return this.cutIn?.videoVolume ?? 50;
+    return this.audioEnabledState() ? (this.cutIn?.videoVolume ?? 50) : 0;
   });
 
+  /** The volume the video plays at, which is 0 while this window's sound is off. */
   get videoVolume(): number {
     return this.videoVolumeSig();
   }
 
+  /**
+   * The width given to the YouTube player, following the cut-in area, or 640 before the area
+   * has been measured.
+   */
   get youTubeWidth(): number {
-    return this.cutInArea()?.nativeElement.clientWidth ?? 640;
+    return this.areaSize().width;
   }
 
+  /**
+   * The height given to the YouTube player, following the cut-in area, or 340 before the area
+   * has been measured.
+   */
   get youTubeHeight(): number {
-    return this.cutInArea()?.nativeElement.clientHeight ?? 340;
+    return this.areaSize().height;
   }
 
-  onPlayerReady($event: { target: { setVolume: (v: number) => void; playVideo: () => void } }) {
-    $event.target.setVolume(this.videoVolume);
-    $event.target.playVideo();
+  /**
+   * Where in the video playback begins: the cut-in's start time plus however far into a shared
+   * start this window joined.
+   */
+  get videoStartSeconds(): number {
+    return +(this.cutIn?.videoStart ?? 0) + this.playbackOffsetMs / 1000;
   }
 
+  /**
+   * Takes hold of the YouTube player once it is ready, starting the video straight away if playback
+   * has already begun and otherwise only setting its volume.
+   */
+  onPlayerReady($event: { target: CutInVideoTarget }) {
+    this.readyVideoTarget = $event.target;
+    if (this.playbackStarted()) {
+      this.startVideo($event.target);
+    } else {
+      $event.target.setVolume(this.videoVolume);
+    }
+  }
+
+  private startVideo(target: CutInVideoTarget): void {
+    target.setVolume(this.videoVolume);
+    if (this.playbackStartedAtMs !== null && target.seekTo) {
+      const elapsedSeconds = Math.max(0, Date.now() - this.playbackStartedAtMs) / 1000;
+      target.seekTo(+(this.cutIn?.videoStart ?? 0) + elapsedSeconds, true);
+    }
+    target.playVideo();
+  }
+
+  /**
+   * Follows the YouTube player's state.
+   *
+   * Playing, pausing and cueing each mark a short transition. When the video ends, a looping
+   * cut-in plays again from its start time unless looping is forced off, and otherwise the window
+   * closes.
+   */
   onPlayerStateChange($event: {
     data: number;
     target?: { seekTo?: (seconds: number, allowSeekAhead: boolean) => void; playVideo?: () => void };
@@ -281,6 +448,7 @@ export class CutInWindowComponent {
     }
   }
 
+  /** Does nothing; no fallback is taken when the video fails. */
   onErrorFallback() {
     if (!this.videoId) return;
   }

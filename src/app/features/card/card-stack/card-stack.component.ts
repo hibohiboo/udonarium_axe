@@ -12,20 +12,20 @@ import {
 } from '@angular/core';
 import { CardGameService } from '@axe/application/card/card-game.service';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { RolePermissionService } from '@axe/application/permission/role-permission.service';
 import { ImageService } from '@axe/application/storage/image.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
+import { VisionService } from '@axe/application/tabletop/vision.service';
 import { ContextMenuSeparator, ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { ModalService } from '@axe/application/ui/modal.service';
 import { MultiMovableService } from '@axe/application/ui/multi-movable.service';
-import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
 import { PieceContextMenuService } from '@axe/application/ui/piece-context-menu.service';
 import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
 import { sheetPanelTitle } from '@axe/application/ui/sheet-panel';
 import { buildSurfaceSwitchContextMenu } from '@axe/application/ui/surface-switch-context-menu';
 import { Network } from '@axe/core/index';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { imageFileEqual } from '@axe/core/storage/image-file';
 import { Card } from '@axe/domain/card/card';
 import { CardStack } from '@axe/domain/card/card-stack';
@@ -35,6 +35,8 @@ import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { surfaceOf } from '@axe/domain/tabletop/tabletop-object';
 import { CardDrawCountDialogComponent } from '@axe/features/card/card-draw-count-dialog/card-draw-count-dialog.component';
 import { buildCardStackContextMenu } from '@axe/features/card/card-stack/card-stack-context-menu';
+import { ObjectPanelService } from '@axe/features/panels/object-panel.service';
+import { CardFaceTextComponent } from '@axe/ui/components/card-face-text/card-face-text.component';
 import { MovableOption } from '@axe/ui/directives/movable.directive';
 import { MovableDirective } from '@axe/ui/directives/movable.directive';
 import { RotableOption } from '@axe/ui/directives/rotable.directive';
@@ -52,8 +54,18 @@ import { TranslocoModule } from '@jsverse/transloco';
   selector: 'card-stack',
   templateUrl: './card-stack.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MovableDirective, NgClass, RotableDirective, SelectableDirective, NgStyle, SafePipe, TranslocoModule],
+  imports: [
+    MovableDirective,
+    NgClass,
+    RotableDirective,
+    SelectableDirective,
+    NgStyle,
+    SafePipe,
+    TranslocoModule,
+    CardFaceTextComponent,
+  ],
   host: {
+    '[style.display]': "isHiddenByFog() ? 'none' : null",
     class: 'block',
     '(carddrop)': 'onCardDrop($event)',
     '(dragstart)': 'onDragstart($event)',
@@ -65,26 +77,33 @@ export class CardStackComponent {
   private readonly contextMenuService = inject(ContextMenuService);
   private readonly pieceContextMenu = inject(PieceContextMenuService);
   private readonly rolePermission = inject(RolePermissionService);
-  private readonly panelService = inject(PanelService);
+  private readonly objectPanels = inject(ObjectPanelService);
   private readonly elementRef = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly imageService = inject(ImageService);
   private readonly pointerDeviceService = inject(PointerDeviceService);
   private readonly selectionSignalService = inject(SelectionSignalService);
   private readonly objectChange = inject(ObjectChangeService);
+  private readonly visionService = inject(VisionService);
   protected readonly tabletopService = inject(TabletopService);
   private readonly modalService = inject(ModalService);
   private readonly multiMovableService = inject(MultiMovableService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly translateFn = inject(TRANSLATE_FN);
 
+  readonly isHiddenByFog = computed(() => {
+    const piece = this.cardStack();
+    if (!piece) return false;
+    this.objectChange.versionOf(piece.identifier)();
+    return this.visionService.isPieceHiddenByFog(piece, this.size);
+  });
+
   readonly cardStack = input.required<CardStack>();
 
-  get isLock(): boolean {
-    return this.cardStack().isLock;
-  }
-  set isLock(isLock: boolean) {
-    this.cardStack().isLock = isLock;
-  }
+  readonly isLock = computed(() => {
+    const cardStack = this.cardStack();
+    this.objectChange.versionOf(cardStack.identifier)();
+    return cardStack.isLock;
+  });
 
   readonly name = computed(() => {
     this.objectChange.versionOf(this.cardStack().identifier)();
@@ -95,37 +114,62 @@ export class CardStackComponent {
     }
     return this.cardStack().name;
   });
+  /** The stack's turn on the table in degrees; writing it turns the synced stack. */
   get rotate(): number {
     return this.cardStack().rotate;
   }
   set rotate(rotate: number) {
     this.cardStack().rotate = rotate;
   }
+  /** Where the stack sits in the stacking order of the pieces on the table. */
   get zindex(): number {
     return this.cardStack().zindex;
   }
+  /** Whether the stack shows how many cards it holds, as toggled from its context menu. */
   get isShowTotal(): boolean {
     return this.cardStack().isShowTotal;
   }
+  /**
+   * The cards in the stack.
+   *
+   * Reads a counter bumped whenever a card leaves the stack, so the count label redraws after a
+   * draw.
+   */
   get cards(): readonly Card[] {
     this.cardsVersion();
     return this.cardStack().cards;
   }
+  /** Whether the stack has no cards left, which shrinks its frame to a fixed size. */
   get isEmpty(): boolean {
     return this.cardStack().isEmpty;
   }
+  /** The stack's width in grid cells, taken from its top card; 2 when the stack is empty. */
   get size(): number {
     const card = this.cardStack().topCard;
     return card ? card.size : 2;
   }
 
-  get hasOwner(): boolean {
-    return this.cardStack().hasOwner;
-  }
-  get ownerName(): string {
-    return this.cardStack().ownerName;
-  }
+  /**
+   * Who is looking through the stack, as the label under it says.
+   *
+   * It follows the stack and the peers, since a name is read off the owner's cursor.
+   */
+  readonly hasOwner = computed(() => {
+    const cardStack = this.cardStack();
+    this.objectChange.versionOf(cardStack.identifier)();
+    return cardStack.hasOwner;
+  });
 
+  readonly ownerName = computed(() => {
+    const cardStack = this.cardStack();
+    this.objectChange.versionOf(cardStack.identifier)();
+    this.objectChange.networkVersion();
+    const cursor = cardStack.owner ? PeerCursor.findByUserId(cardStack.owner) : null;
+    if (cursor) this.objectChange.versionOf(cursor.identifier)();
+    return cardStack.ownerName;
+  });
+
+  /** The card showing on top of the stack, or null when the stack is empty. */
   get topCard(): Card | null {
     return this.cardStack().topCard;
   }
@@ -176,6 +220,10 @@ export class CardStackComponent {
     computation: () => null,
   });
 
+  /**
+   * Records the natural size of the top card's picture once it loads, which the face's
+   * supersampling is worked out from. A picture that reports no size is ignored.
+   */
   onImageLoad(event: Event): void {
     const img = event.target as HTMLImageElement;
     if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
@@ -202,6 +250,10 @@ export class CardStackComponent {
     return (this.imageBoxWidthPx() * natural.height) / natural.width;
   });
 
+  /**
+   * The CSS transform for the top card's picture: the given inner transform wrapped in the
+   * supersampling scale.
+   */
   imageTransform(inner: string): string {
     return supersampleTransform({ factor: this.imageSupersample(), anchor: 'top', inner });
   }
@@ -212,6 +264,7 @@ export class CardStackComponent {
   private readonly iconHiding = hideIconWhileTouched(this.destroyRef);
   readonly isIconHidden = this.iconHiding.isHidden;
 
+  /** The size of one grid cell on the current table, in pixels. */
   get gridSize(): number {
     return this.tabletopService.gridSize();
   }
@@ -251,10 +304,18 @@ export class CardStackComponent {
     return this.inputRef.current;
   }
 
+  /** Ends the shuffle animation once it has played, so the next shuffle can play it again. */
   onShuffleDone() {
     this.animeState.set('inactive');
   }
 
+  /**
+   * Takes a card or stack dropped close enough onto this one.
+   *
+   * A card within 50px goes on top, along with any cards moved together with it. Another stack
+   * within 25px is merged with this one into a new stack that replaces both. Drops of anything
+   * else, or of this stack onto itself, are left to other listeners.
+   */
   onCardDrop(e: Event) {
     const ce = e as CustomEvent;
     if (this.cardStack() === ce.detail || (!(ce.detail instanceof Card) && !(ce.detail instanceof CardStack))) {
@@ -285,10 +346,17 @@ export class CardStackComponent {
     }
   }
 
+  /** Feeds a press into the double-tap detector, which draws a card when a second press lands in place. */
   startDoubleClickTimer(e: MouseEvent | TouchEvent) {
     this.doubleTap.handle(e, () => this.onDoubleClick());
   }
 
+  /**
+   * Draws the top card onto the table on a double click or double tap.
+   *
+   * Does nothing for a reader who may not edit the table, or when the pointer moved between the two
+   * presses.
+   */
   onDoubleClick() {
     this.doubleTap.cancel();
     if (!this.rolePermission.canEditTabletop) return;
@@ -298,11 +366,16 @@ export class CardStackComponent {
     }
   }
 
+  /** Stops the browser's native drag of the stack's images, so only the movable directive moves it. */
   onDragstart(e: DragEvent) {
     e.stopPropagation();
     e.preventDefault();
   }
 
+  /**
+   * Starts a press on the stack: arms the double tap, brings the stack to the top, briefly hides
+   * its handle icons and selects it.
+   */
   onInputStart(e: MouseEvent | TouchEvent) {
     this.startDoubleClickTimer(e);
     this.cardStack().toTopmost();
@@ -311,6 +384,12 @@ export class CardStackComponent {
     this.selectionSignalService.selectObject(this.cardStack().identifier, 'GameCharacter');
   }
 
+  /**
+   * Opens the stack's context menu at the pointer.
+   *
+   * When several pieces are selected the shared selection menu opens instead. Entries for switching
+   * the surface the stack lies on are appended when there are any.
+   */
   onContextMenu(e: Event) {
     e.stopPropagation();
     e.preventDefault();
@@ -343,10 +422,15 @@ export class CardStackComponent {
     );
   }
 
+  /** Plays the pick-up sound when the stack starts being dragged or turned. */
   onMove() {
     SoundEffect.play(PresetSound.cardPick);
   }
 
+  /**
+   * Plays the put-down sound when a drag ends, and offers the stack as a drop to its siblings so it
+   * can merge into a stack it landed on.
+   */
   onMoved() {
     SoundEffect.play(PresetSound.cardPut);
     this.dispatchCardDropEvent();
@@ -491,23 +575,7 @@ export class CardStackComponent {
   }
 
   private showDetail(gameObject: CardStack) {
-    this.selectionSignalService.selectObject(gameObject.identifier, gameObject.aliasName);
-    const coordinate = this.pointerDeviceService.pointers[0];
     const title = sheetPanelTitle(this.translateFn('feature.cardStack.settingTitle'), gameObject.name);
-    const option: PanelOption = {
-      title: title,
-      left: coordinate.x - 300,
-      top: coordinate.y - 300,
-      width: 640,
-      height: 720,
-    };
-    this.panelService.openLazy(
-      () =>
-        import('@axe/features/character/game-character-sheet/game-character-sheet.component').then(
-          (m) => m.GameCharacterSheetComponent
-        ),
-      option,
-      (component) => (component.tabletopObject = gameObject)
-    );
+    this.objectPanels.openSheet(gameObject, title, { width: 640, height: 720 }, { offset: { x: 300, y: 300 } });
   }
 }

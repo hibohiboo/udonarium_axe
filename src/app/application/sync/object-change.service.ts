@@ -44,6 +44,7 @@ import {
   objectRemoved$,
   type ObjectStoreEvent,
 } from '@axe/core/sync/object-event-extension';
+import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 
 export type {
   CoinFlipEvent,
@@ -98,7 +99,6 @@ export class ObjectChangeService {
     return sig.asReadonly();
   }
 
-  /** Bumps the version by hand for a property no sync var covers. */
   /** A coin you flipped starts spinning here, without waiting for the round trip. */
   notifyCoinFlipped(identifier: string, face: string): void {
     this._flipCoin$.emit({ identifier, face });
@@ -109,6 +109,12 @@ export class ObjectChangeService {
     this._rollDiceSymbol$.emit({ identifier });
   }
 
+  /**
+   * Bumps the `versionOf` signal for an object by hand, for a change no sync var reports.
+   *
+   * Nothing is sent to other peers, and nothing happens until something has followed that
+   * identifier.
+   */
   notifyChanged(identifier: string): void {
     this._versions.get(identifier)?.update((v) => v + 1);
   }
@@ -129,8 +135,26 @@ export class ObjectChangeService {
     return sig.asReadonly();
   }
 
+  /**
+   * Bumps the `collectionOf` signal for an alias by hand, for a move or reparent that changes which
+   * objects a filtered view holds.
+   */
   notifyCollectionChanged(aliasName: string): void {
     this._collections.get(aliasName)?.update((v) => v + 1);
+  }
+
+  /**
+   * Follow the cursor of whoever is reading, for anything that answers by their role.
+   *
+   * The cursor is a static that is absent until a room has been joined, so following only
+   * the one that can be seen follows nothing at all while there is none. A computation that
+   * did so kept the default role for as long as it held its answer, and never heard the
+   * cursor arrive. The set of cursors is followed as well, which is how it hears.
+   */
+  trackMyCursor(): void {
+    this.collectionOf(PeerCursor.aliasName)();
+    const cursor = PeerCursor.myCursor;
+    if (cursor) this.versionOf(cursor.identifier)();
   }
 
   /**
@@ -149,6 +173,12 @@ export class ObjectChangeService {
     }, destroyRef);
   }
 
+  /**
+   * Listens for batched change events on objects of any of the given aliases.
+   *
+   * Returns the unsubscribe function; passing a `destroyRef` calls it automatically. For a single
+   * fixed alias, `onObjectChangedForSingleAlias` dispatches without filtering each event.
+   */
   onObjectChangedForAlias(
     aliasNames: readonly string[],
     listener: (event: ObjectChangeEvent) => void,
@@ -308,9 +338,12 @@ export class ObjectChangeService {
       this._collections.get(e.aliasName)?.update((v) => v + 1);
     }, this.destroyRef);
 
-    // A removal bumps the collection and drops the version entry itself.
+    // A removal bumps the collection and the object's own version, then drops the version entry.
+    // The parent hears of it only on the next microtask, so this is what reaches a computation
+    // that followed the object itself at once.
     objectRemoved$.subscribe((e) => {
       this._collections.get(e.aliasName)?.update((v) => v + 1);
+      this._versions.get(e.identifier)?.update((v) => v + 1);
       this._versions.delete(e.identifier);
     }, this.destroyRef);
 

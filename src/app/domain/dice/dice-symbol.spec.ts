@@ -12,15 +12,9 @@ describe('DiceSymbol', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({});
     store = ObjectStore.instance;
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
   });
 
   afterEach(() => {
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     vi.clearAllMocks();
     vi.restoreAllMocks();
   });
@@ -123,6 +117,21 @@ describe('DiceSymbol', () => {
     it('starts unturned', () => {
       const dice = DiceSymbol.create('d6', DiceType.D6, 1);
       expect(dice.rotate).toBe(0);
+    });
+
+    it('starts still to be used', () => {
+      const dice = DiceSymbol.create('d6', DiceType.D6, 1);
+      expect(dice.isUsed).toBe(false);
+    });
+
+    it('reads a die from a room that had no such mark as still to be used', () => {
+      const dice = DiceSymbol.create('d6', DiceType.D6, 1);
+      const context = dice.toContext();
+      delete (context.syncData as Record<string, unknown>)['isUsed'];
+
+      dice.apply(context);
+
+      expect(dice.isUsed).toBeFalsy();
     });
   });
 

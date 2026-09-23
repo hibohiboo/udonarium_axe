@@ -3,11 +3,13 @@ import { Network } from '@axe/core/network/network';
 import { GameObject } from '@axe/core/sync/game-object';
 import { objectAdded$, objectRemoved$ } from '@axe/core/sync/object-event-extension';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { DataElement } from '@axe/domain/data/data-element';
 
 type ObjectStorePrivate = {
   aliasNameMap: Map<string, Map<string, GameObject> | undefined>;
   garbageMap: Map<string, number>;
-  garbageCollectionTimer: ReturnType<typeof setTimeout> | null;
+  garbageSweepCooldown: ReturnType<typeof setTimeout> | null;
+  runGarbageCollection(ms: number): void;
 };
 
 const asPrivate = (store: ObjectStore): ObjectStorePrivate => store as unknown as ObjectStorePrivate;
@@ -20,23 +22,15 @@ describe('ObjectStore', () => {
     TestBed.configureTestingModule({});
     store = ObjectStore.instance;
     sendSpy = vi.spyOn(Network.instance, 'send').mockImplementation(() => {});
-    // Clear any existing objects from previous tests
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
+    // The store is a singleton, and its sweep waits a second between runs. A test that
+    // deletes has to start from a state where the next sweep can actually run.
+    const cooldown = asPrivate(store).garbageSweepCooldown;
+    if (cooldown !== null) clearTimeout(cooldown);
+    asPrivate(store).garbageSweepCooldown = null;
   });
 
   afterEach(() => {
     // Cleanup after each test
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
-    // Cancel any pending garbageCollectionTimer to prevent leaking timers
-    const privateStore = asPrivate(store);
-    if (privateStore.garbageCollectionTimer != null) {
-      clearTimeout(privateStore.garbageCollectionTimer);
-      privateStore.garbageCollectionTimer = null;
-    }
     vi.clearAllMocks();
   });
 
@@ -310,7 +304,11 @@ describe('ObjectStore', () => {
 
       store.update('test-id-22');
 
-      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ eventName: 'UPDATE_GAME_OBJECT' }), undefined);
+      expect(sendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ eventName: 'UPDATE_GAME_OBJECT' }),
+        undefined,
+        'test-id-22'
+      );
     });
 
     it('should queue update by context', () => {
@@ -322,11 +320,12 @@ describe('ObjectStore', () => {
 
       expect(sendSpy).toHaveBeenCalledWith(
         expect.objectContaining({ eventName: 'UPDATE_GAME_OBJECT', data: context }),
-        undefined
+        undefined,
+        'test-id-23'
       );
     });
 
-    it('should merge multiple updates for the same object', () => {
+    it('hands every update to the network under the identifier, so a later one replaces one still waiting', () => {
       const obj = new GameObject('test-id-24');
       store.add(obj, false);
       const context1 = obj.toContext();
@@ -337,8 +336,38 @@ describe('ObjectStore', () => {
       store.update(context1);
       store.update(context2);
 
-      // Should be called only once initially, then queued updates are merged
-      expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(sendSpy).toHaveBeenCalledTimes(2);
+      expect(sendSpy).toHaveBeenLastCalledWith(expect.objectContaining({ data: context2 }), undefined, 'test-id-24');
+    });
+
+    it('still sends an update made after the one before it was taken for sending', () => {
+      sendSpy.mockRestore();
+      const network = Network.instance as unknown as { connection: unknown; sendQueue(): void };
+      const sentVersions: number[] = [];
+      network.connection = {
+        send: (batch: { data?: { identifier?: string; minorVersion?: number } }[]) => {
+          for (const message of batch) {
+            if (message.data?.identifier === 'test-id-25') sentVersions.push(message.data.minorVersion ?? -1);
+          }
+        },
+      };
+      try {
+        const obj = new GameObject('test-id-25');
+        store.add(obj, false);
+        const context1 = obj.toContext();
+        context1.minorVersion = 1;
+        const context2 = obj.toContext();
+        context2.minorVersion = 2;
+
+        store.update(context1);
+        network.sendQueue();
+        store.update(context2);
+        network.sendQueue();
+
+        expect(sentVersions).toEqual([1, 2]);
+      } finally {
+        network.connection = null;
+      }
     });
 
     it('should do nothing for non-existent object identifier', () => {
@@ -595,5 +624,24 @@ describe('ObjectStore', () => {
     object.apply(object.toContext());
 
     expect(ObjectStore.instance.localChangeCountOf(object.identifier)).toBe(before + 1);
+  });
+});
+
+describe('sweeping the record of what was deleted', () => {
+  it('sweeps once for a run of deletes rather than once per delete', () => {
+    const store = ObjectStore.instance;
+    const cooldown = asPrivate(store).garbageSweepCooldown;
+    if (cooldown !== null) clearTimeout(cooldown);
+    asPrivate(store).garbageSweepCooldown = null;
+    const sweep = vi.spyOn(asPrivate(store), 'runGarbageCollection');
+
+    for (let i = 0; i < 5; i++) {
+      const object = DataElement.create(`gone-${i}`, '', {});
+      object.initialize();
+      store.delete(object, false);
+    }
+
+    expect(sweep).toHaveBeenCalledTimes(1);
+    sweep.mockRestore();
   });
 });

@@ -3,9 +3,16 @@ import { PeerRole } from '@axe/domain/peer/peer-role';
 import { syncValueOf } from '@axe/domain/replay/replay-diff';
 import type { ReplayViewer } from '@axe/domain/replay/replay-event';
 import type { ReplayObjectSnapshot } from '@axe/domain/replay/replay-keyframe';
-import { perimeterSegments, rectangleSegments, type Segment } from '@axe/domain/tabletop/los/segments';
+import {
+  perimeterSegments,
+  rectangleSegments,
+  type Segment,
+  type TallSegment,
+} from '@axe/domain/tabletop/los/segments';
 import {
   computeOverlayPlan,
+  eyeHeightPx,
+  isPointVisible,
   type OverlayPlan,
   type SceneLight,
   type SceneViewer,
@@ -13,6 +20,14 @@ import {
   type ShadowCaster,
   type VisionScene,
 } from '@axe/domain/tabletop/vision-scene';
+import {
+  asVisionShape,
+  facingBearing,
+  VISION_SHAPE_DEFAULTS,
+  visionLobesOf,
+  VisionShape,
+  type VisionSpec,
+} from '@axe/domain/tabletop/vision-shape';
 import type { VisionType } from '@axe/domain/tabletop/vision-types';
 
 /**
@@ -31,6 +46,11 @@ const LIGHT_ALIAS = 'light-source';
 const TABLE_PLACE = 'table';
 const FLOOR: string = 'floor';
 
+/**
+ * The table being viewed in the snapshot, as the table selector names it, or the first table there is.
+ *
+ * Null when the snapshot holds no table.
+ */
 export function replayViewTableOf(snapshots: readonly ReplayObjectSnapshot[]): ReplayObjectSnapshot | null {
   const tables = snapshots.filter((snapshot) => snapshot.aliasName === TABLE_ALIAS);
   if (tables.length < 1) return null;
@@ -61,6 +81,13 @@ export function replaySceneViewer(snapshots: readonly ReplayObjectSnapshot[], vi
   return { userId, isGameMaster: false, partyIds: partyIdsOwnedBy(members, userId) };
 }
 
+/**
+ * The darkness, fog, lights, sight, walls and shadow casters of a recorded board, in the shape
+ * the live vision code judges.
+ *
+ * It is built whether or not the table uses darkness. Null when there is no table or its grid
+ * has no size.
+ */
 export function buildReplayVisionScene(snapshots: readonly ReplayObjectSnapshot[]): VisionScene | null {
   const table = replayViewTableOf(snapshots);
   if (!table) return null;
@@ -74,6 +101,7 @@ export function buildReplayVisionScene(snapshots: readonly ReplayObjectSnapshot[
 
   return {
     darknessEnabled: flag(table, 'darknessEnabled'),
+    fogEnabled: flag(table, 'fogEnabled'),
     darknessLevel: number(table, 'darknessLevel', 1),
     ambientColor: text(table, 'ambientColor') || '#000000',
     globalIllumination: number(table, 'globalIllumination'),
@@ -82,7 +110,7 @@ export function buildReplayVisionScene(snapshots: readonly ReplayObjectSnapshot[
     snapLightToGrid: flag(table, 'lightSnapToGrid'),
     widthPx,
     heightPx,
-    lights: lightsOf(snapshots, terrains, gridSize),
+    lights: lightsOf(snapshots, terrains, gridSize, table.identifier),
     visionSources: visionSourcesOf(snapshots, gridSize),
     ...segmentsOf(table, terrains, gridSize, widthPx, heightPx),
     shadowCasters: shadowCastersOf(snapshots, gridSize),
@@ -94,9 +122,53 @@ export function replayOverlayPlan(
   snapshots: readonly ReplayObjectSnapshot[],
   viewer: ReplayViewer
 ): OverlayPlan | null {
+  return replayDarknessOf(snapshots, viewer)?.plan ?? null;
+}
+
+/** The darkness over a recorded board, and whether a point of it can be seen, as a viewer has them. */
+export interface ReplayDarkness {
+  plan: OverlayPlan;
+  /** Whether the viewer can see a point of the table, in table pixels, by the live table's own rule. */
+  sees(x: number, y: number): boolean;
+}
+
+/**
+ * The darkness over a recorded board as a viewer has it: the plan to draw, and what they can see
+ * through it. Null for a table that uses no darkness.
+ */
+export function replayDarknessOf(
+  snapshots: readonly ReplayObjectSnapshot[],
+  viewer: ReplayViewer
+): ReplayDarkness | null {
   const scene = buildReplayVisionScene(snapshots);
   if (!scene || !scene.darknessEnabled) return null;
-  return computeOverlayPlan(scene, replaySceneViewer(snapshots, viewer));
+  const sceneViewer = replaySceneViewer(snapshots, viewer);
+  return {
+    plan: computeOverlayPlan(scene, sceneViewer),
+    sees: (x, y) => isPointVisible(scene, x, y, sceneViewer),
+  };
+}
+
+/**
+ * The shape of a piece's sight, as a snapshot has it.
+ *
+ * A snapshot that never wrote a field falls back to what the table itself starts a piece
+ * with, read from the one place those are written down. Spelled out again here, tuning the
+ * table's defaults would leave the replay drawing a sight the piece never had.
+ */
+function shapeOf(character: ReplayObjectSnapshot): VisionSpec {
+  const shape = asVisionShape(text(character, 'visionShape'));
+  const def = VISION_SHAPE_DEFAULTS[shape === VisionShape.CUSTOM ? VisionShape.CONE : shape];
+  return {
+    shape,
+    coneAngle: number(character, 'visionConeAngle', def.coneAngle),
+    coneCount: number(character, 'visionConeCount', def.coneCount),
+    backAngle: number(character, 'visionBackAngle', def.backAngle),
+    backScale: number(character, 'visionBackScale', def.backScale),
+    peripheralScale: number(character, 'visionPeripheralScale', def.peripheralScale),
+    direction: 0,
+    lobes: text(character, 'visionLobes'),
+  };
 }
 
 function charactersOn(snapshots: readonly ReplayObjectSnapshot[]): ReplayObjectSnapshot[] {
@@ -114,18 +186,20 @@ function terrainsOf(snapshots: readonly ReplayObjectSnapshot[], tableIdentifier:
 function lightsOf(
   snapshots: readonly ReplayObjectSnapshot[],
   terrains: readonly ReplayObjectSnapshot[],
-  gridSize: number
+  gridSize: number,
+  tableIdentifier: string
 ): SceneLight[] {
   const lights: SceneLight[] = [];
 
   for (const source of snapshots) {
     if (source.aliasName !== LIGHT_ALIAS) continue;
-    if (!flag(source, 'isVisibleOnTable') || !flag(source, 'lightEnabled')) continue;
+    if (!placedOnTable(source) || !flag(source, 'lightEnabled')) continue;
+    if (!belongsTo(source, tableIdentifier, snapshots)) continue;
 
     // A light that follows a piece shines where that piece stands.
     const following = text(source, 'followingCharacterIdentifier');
     const anchor = following
-      ? (snapshots.find((one) => one.identifier === following && flag(one, 'isVisibleOnTable')) ?? source)
+      ? (snapshots.find((one) => one.identifier === following && placedOnTable(one)) ?? source)
       : source;
     const centre = anchor === source ? gridSize / 2 : (gridSize * Math.max(number(anchor, 'size', 1), 0.25)) / 2;
     lights.push(lightAt(source, anchor, centre, gridSize));
@@ -133,7 +207,7 @@ function lightsOf(
 
   for (const character of snapshots) {
     if (character.aliasName !== CHARACTER_ALIAS) continue;
-    if (!flag(character, 'isVisibleOnTable') || !flag(character, 'lightEnabled')) continue;
+    if (!placedOnTable(character) || !flag(character, 'lightEnabled')) continue;
     const centre = (gridSize * Math.max(number(character, 'size', 1), 0.25)) / 2;
     lights.push(lightAt(character, character, centre, gridSize));
   }
@@ -190,10 +264,14 @@ function visionSourcesOf(snapshots: readonly ReplayObjectSnapshot[], gridSize: n
     sources.push({
       x: location.x + centre,
       y: location.y + centre,
+      z: eyeHeightPx(number(character, 'altitude'), number(character, 'posZ'), gridSize),
       type: text(character, 'visionType') as VisionType,
       rangePx: number(character, 'visionRange') * gridSize,
       owner,
       partyId: text(character, 'partyIdentifier') || undefined,
+      sourceId: character.identifier,
+      direction: facingBearing(number(character, 'rotate'), number(character, 'visionDirection')),
+      lobes: visionLobesOf(shapeOf(character)),
     });
   }
   return sources;
@@ -225,9 +303,9 @@ function segmentsOf(
   gridSize: number,
   widthPx: number,
   heightPx: number
-): { sightSegments: Segment[]; lightSegments: Segment[] } {
-  const sightSegments: Segment[] = [...perimeterSegments(widthPx, heightPx)];
-  const lightSegments: Segment[] = [];
+): { sightSegments: TallSegment[]; lightSegments: TallSegment[] } {
+  const sightSegments: TallSegment[] = [...perimeterSegments(widthPx, heightPx)];
+  const lightSegments: TallSegment[] = [];
 
   const walls: [string, Segment][] = [
     ['showNorthWall', { x1: 0, y1: 0, x2: widthPx, y2: 0 }],
@@ -251,8 +329,19 @@ function segmentsOf(
       number(terrain, 'depth', 1) * gridSize,
       number(terrain, 'rotate')
     );
-    if (flag(terrain, 'blocksSight')) sightSegments.push(...edges);
-    if (flag(terrain, 'blocksLight') && !flag(terrain, 'lightEnabled')) lightSegments.push(...edges);
+    // A door that stood open stopped nothing at the time, and must stop nothing in the replay:
+    // the snapshot carries whether it was open, so the same reckoning is made of it here.
+    const shut = !(flag(terrain, 'isDoor') && flag(terrain, 'isDoorOpen'));
+    // The height it was built to hang at, which is not where it came to rest: what a block
+    // settled onto is under it, and a look does not pass through that.
+    const base = number(terrain, 'altitude') * gridSize;
+    const top = base + number(terrain, 'posZ') + number(terrain, 'height', 1) * gridSize;
+    if (flag(terrain, 'blocksSight') && shut) {
+      for (const edge of edges) sightSegments.push({ ...edge, heightPx: top, basePx: base });
+    }
+    if (flag(terrain, 'blocksLight') && shut && !flag(terrain, 'lightEnabled')) {
+      for (const edge of edges) lightSegments.push({ ...edge, heightPx: top, basePx: base });
+    }
   }
 
   return { sightSegments, lightSegments };
@@ -270,6 +359,25 @@ function locationOf(snapshot: ReplayObjectSnapshot): { x: number; y: number; nam
 
 function surfaceOf(snapshot: ReplayObjectSnapshot): string {
   return locationOf(snapshot).surface || FLOOR;
+}
+
+/**
+ * Whether a piece is out on the table, wherever on it it stands. The live piece works this out from
+ * its location as it is asked; a recording keeps the location, not the answer.
+ */
+function placedOnTable(snapshot: ReplayObjectSnapshot): boolean {
+  return locationOf(snapshot).name === TABLE_PLACE;
+}
+
+/** Whether a piece belongs to the table in view: it is kept under that table, or under none. */
+function belongsTo(
+  snapshot: ReplayObjectSnapshot,
+  tableIdentifier: string,
+  snapshots: readonly ReplayObjectSnapshot[]
+): boolean {
+  const parent = String(snapshot.syncData['parentIdentifier'] ?? '');
+  if (parent.length < 1 || parent === tableIdentifier) return true;
+  return !snapshots.some((one) => one.identifier === parent && one.aliasName === TABLE_ALIAS);
 }
 
 function onTable(snapshot: ReplayObjectSnapshot): boolean {

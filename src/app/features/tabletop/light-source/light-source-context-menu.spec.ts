@@ -1,8 +1,12 @@
 import { TestBed } from '@angular/core/testing';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { GameTable } from '@axe/domain/tabletop/game-table';
 import { LightSource } from '@axe/domain/tabletop/light-source';
 import { LIGHT_PRESETS, LightPreset } from '@axe/domain/tabletop/vision-types';
-import { buildLightSourceContextMenu } from '@axe/features/tabletop/light-source/light-source-context-menu';
+import {
+  buildLightSourceContextMenu,
+  buildLightSourceContextMenuModel,
+} from '@axe/features/tabletop/light-source/light-source-context-menu';
 
 const t = (key: string) => key;
 
@@ -16,14 +20,47 @@ describe('buildLightSourceContextMenu', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({});
     store = ObjectStore.instance;
-    store.getObjects().forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
   });
 
   afterEach(() => {
-    store.getObjects().forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     vi.clearAllMocks();
+  });
+
+  it('hangs a copied light on the table the original hangs on', () => {
+    const table = new GameTable();
+    table.initialize();
+    const light = LightSource.create('L');
+    light.location.x = 100;
+    light.location.y = 100;
+    light.isLock = true;
+    table.appendChild(light);
+    // happy-dom will not parse the dotted attributes a piece writes, so the copy stands in.
+    const copy = LightSource.create('L');
+    copy.location.x = 100;
+    copy.location.y = 100;
+    copy.isLock = true;
+    vi.spyOn(light, 'clone').mockReturnValue(copy);
+
+    findByName(buildLightSourceContextMenu(light, 50, [], vi.fn(), t, vi.fn()), 'copy')?.action?.();
+
+    expect(copy.parent).toBe(table);
+    expect(copy.location.x).toBe(150);
+    expect(copy.location.y).toBe(150);
+    expect(copy.isLock).toBe(false);
+  });
+
+  it('groups every action for the 2D menu without changing the ordinary menu', () => {
+    const light = LightSource.create('L');
+    const model = buildLightSourceContextMenuModel(light, 50, [], vi.fn(), t, vi.fn());
+
+    expect(model.radialGroups.map((group) => group.name)).toEqual([
+      'feature.light.contextMenu.radialAppearance',
+      'feature.light.contextMenu.radialPosition',
+      'feature.light.contextMenu.radialObject',
+    ]);
+    const ordinaryActions = model.actions.filter((action) => action.name.length > 0);
+    const radialActions = model.radialGroups.flatMap((group) => group.actions);
+    expect(new Set(radialActions)).toEqual(new Set(ordinaryActions));
   });
 
   it('switches the light on and off', () => {

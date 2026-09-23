@@ -1,11 +1,13 @@
 import { inject, Injectable } from '@angular/core';
+import { CoordinateService } from '@axe/application/input/coordinate.service';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
+import { BillboardFrameService } from '@axe/application/ui/billboard-frame.service';
 import { ContextMenuService } from '@axe/application/ui/context-menu.service';
-import { selectByRect } from '@axe/application/ui/rect-hit-test';
+import { marqueeApply, selectByRect } from '@axe/application/ui/rect-hit-test';
 import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
 import { UiSignalService } from '@axe/application/ui/ui-signal.service';
-import { CoordinateService } from '@axe/core/input/coordinate.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
+import { TABLE_PERSPECTIVE_PX } from '@axe/domain/tabletop/physical-scale';
 import { TabletopObject } from '@axe/domain/tabletop/tabletop-object';
 import {
   MarqueeModifiers,
@@ -21,6 +23,7 @@ export class GameTableGestureService {
   private readonly contextMenuService = inject(ContextMenuService);
   private readonly pointerDeviceService = inject(PointerDeviceService);
   private readonly uiSignalService = inject(UiSignalService);
+  private readonly billboardFrame = inject(BillboardFrameService);
   private readonly selectionSignalService = inject(SelectionSignalService);
   private readonly tabletopService = inject(TabletopService);
   private readonly coordinateService = inject(CoordinateService);
@@ -36,6 +39,12 @@ export class GameTableGestureService {
   viewRotateZ = 10;
 
   tiltLocked = false;
+  orthographicProjection = false;
+  /** A display lying flat under miniatures is touched constantly; the view holds still. */
+  viewLocked = false;
+
+  private frame: number | null = null;
+  private turned = false;
 
   private mouseGesture: TableMouseGesture | null = null;
   private touchGesture: TableTouchGesture | null = null;
@@ -46,6 +55,12 @@ export class GameTableGestureService {
   private gridCanvasEl!: HTMLCanvasElement;
   private getGridShow!: () => boolean;
 
+  /**
+   * Wires the mouse, touch and marquee gestures to the table's elements, once the view is built.
+   *
+   * `getGridShow` says whether the grid stays visible, since the grid canvas is shown while a piece
+   * is dragged and put back to that afterwards.
+   */
   initialize(
     rootEl: HTMLElement,
     gameTableEl: HTMLElement,
@@ -79,6 +94,24 @@ export class GameTableGestureService {
     this.touchGesture.onSynthesizeContextMenu = () => this.pointerDeviceService.cancelPendingContextMenu();
   }
 
+  /** Takes the gestures off the table, and drops a view update still waiting for its frame. */
+  destroy(): void {
+    if (this.frame !== null) cancelAnimationFrame(this.frame);
+    this.frame = null;
+    this.mouseGesture?.destroy();
+    this.mouseGesture = null;
+    this.touchGesture?.destroy();
+    this.touchGesture = null;
+    this.marqueeGesture?.cancel();
+    this.marqueeGesture = null;
+  }
+
+  /**
+   * Ends whatever press is under way on the table, a mouse drag or a marquee, and puts the grid
+   * back to shown or hidden as the table has it.
+   *
+   * Does nothing before `initialize`.
+   */
   cancelInput(): void {
     if (!this.gridCanvasEl) return;
     this.mouseGesture?.cancel();
@@ -90,6 +123,14 @@ export class GameTableGestureService {
     this.gridCanvasEl.style.opacity = opacity + '';
   }
 
+  /**
+   * Moves the view by the amounts given, and shows the move on the next frame.
+   *
+   * A mouse reports where it is far oftener than the screen is redrawn, and every report used
+   * to write a transform and tell every piece on the table which way it now faces. The sums
+   * are still done here, so anything asking how the view stands is answered at once; the
+   * writing and the telling happen together, once, when the frame comes round.
+   */
   setTransform(tX: number, tY: number, tZ: number, rX: number, rY: number, rZ: number): void {
     if (this.tiltLocked) {
       rX = -this.viewRotateX;
@@ -102,17 +143,49 @@ export class GameTableGestureService {
     this.viewPositionY += tY;
     this.viewPositionZ += tZ;
 
-    if (rX !== 0 || rY !== 0 || rZ !== 0) {
-      this.uiSignalService.notifyTableViewRotation(this.viewRotateX, this.viewRotateY, this.viewRotateZ);
-    }
+    this.turned ||= rX !== 0 || rY !== 0 || rZ !== 0;
+    if (this.frame !== null) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = null;
+      this.showTransform();
+    });
+  }
 
+  /** Writes the view out and tells the table which way it faces, both in the one frame. */
+  private showTransform(): void {
     const tx = this.viewPositionX.toFixed(4);
     const ty = this.viewPositionY.toFixed(4);
     const tz = this.viewPositionZ.toFixed(4);
     const rx = this.viewRotateX.toFixed(4);
     const ry = this.viewRotateY.toFixed(4);
     const rz = this.viewRotateZ.toFixed(4);
-    this.gameTableEl.style.transform = `translateZ(${tz}px) translateY(${ty}px) translateX(${tx}px) rotateY(${ry}deg) rotateX(${rx}deg) rotateZ(${rz}deg)`;
+    // The camera is held short of the plane it would be standing on. At the plane the divisor
+    // is nothing and the whole transform is thrown out by the browser, taking the pan and the
+    // rotation with it; past it the board is drawn mirrored.
+    const depth = Math.max(TABLE_PERSPECTIVE_PX / 100, TABLE_PERSPECTIVE_PX - this.viewPositionZ);
+    const projectionScale = this.orthographicProjection ? `scale(${(TABLE_PERSPECTIVE_PX / depth).toFixed(6)}) ` : '';
+    this.gameTableEl.style.transform = `${projectionScale}translateZ(${tz}px) translateY(${ty}px) translateX(${tx}px) rotateY(${ry}deg) rotateX(${rx}deg) rotateZ(${rz}deg)`;
+
+    this.coordinateService.invalidateTabletopTransform();
+
+    if (!this.turned) return;
+    this.turned = false;
+    const rotation = { x: this.viewRotateX, y: this.viewRotateY, z: this.viewRotateZ };
+    // Written here rather than through a signal, so what faces the camera turns in the frame the
+    // table turns in rather than in the one after it.
+    this.billboardFrame.apply(rotation);
+    this.uiSignalService.notifyTableViewRotation(rotation.x, rotation.y, rotation.z);
+  }
+
+  /**
+   * Puts the camera at a depth outright, rather than nudging it there.
+   *
+   * The zoom the gestures allow stops at life size, but a screen laid flat has to go past it
+   * for a square to measure an inch. This is the way past, and the reason the lock exists:
+   * once there, the gestures would pull the view straight back.
+   */
+  snapToViewPositionZ(viewPositionZ: number): void {
+    this.setTransform(0, 0, viewPositionZ - this.viewPositionZ, 0, 0, 0);
   }
 
   private onTableTouchStart(): void {
@@ -140,13 +213,20 @@ export class GameTableGestureService {
   ): void {
     if (!this.isTableTransformMode || document.body !== document.activeElement) return;
 
+    // Only the movement is dropped: the long press that opens the menu is a separate path,
+    // so a locked display can still be unlocked from it.
+    if (this.viewLocked) {
+      if (srcEvent.cancelable) srcEvent.preventDefault();
+      return;
+    }
+
     if (!this.pointerDeviceService.isAllowedToOpenContextMenu && this.contextMenuService.isShow) {
       this.contextMenuService.close();
     }
 
     if (srcEvent.cancelable) srcEvent.preventDefault();
 
-    const scale = (3000 + Math.abs(this.viewPositionZ)) / 3000;
+    const scale = (TABLE_PERSPECTIVE_PX + Math.abs(this.viewPositionZ)) / TABLE_PERSPECTIVE_PX;
     transformX *= scale;
     transformY *= scale;
     transformZ *= 3;
@@ -218,13 +298,19 @@ export class GameTableGestureService {
 
     if (!this.isTableTransformMode || document.body !== document.activeElement) return;
 
+    // The marquee above still runs, since locking holds the view rather than the selection.
+    if (this.viewLocked) {
+      if ((srcEvent as Event).cancelable) (srcEvent as Event).preventDefault();
+      return;
+    }
+
     if (!this.pointerDeviceService.isAllowedToOpenContextMenu && this.contextMenuService.isShow) {
       this.contextMenuService.close();
     }
 
     if ((srcEvent as Event).cancelable) (srcEvent as Event).preventDefault();
 
-    const scale = (3000 + Math.abs(this.viewPositionZ)) / 3000;
+    const scale = (TABLE_PERSPECTIVE_PX + Math.abs(this.viewPositionZ)) / TABLE_PERSPECTIVE_PX;
     transformX *= scale;
     transformY *= scale;
     transformZ *= 3;
@@ -261,10 +347,10 @@ export class GameTableGestureService {
     this.selectionSignalService.marqueeState.set(null);
     const candidates = this.collectSelectableObjects();
     const hits = selectByRect(candidates, rect);
-    const togglesSelection = modifiers.ctrl || (modifiers.touch && this.selectionSignalService.selectionSize() > 0);
-    if (modifiers.shift) {
+    const joins = marqueeApply(modifiers, this.selectionSignalService.selectionSize() > 0);
+    if (joins === 'add') {
       for (const id of hits) this.selectionSignalService.addSelection(id);
-    } else if (togglesSelection) {
+    } else if (joins === 'toggle') {
       for (const id of hits) this.selectionSignalService.toggleSelection(id);
     } else {
       this.selectionSignalService.replaceSelection(hits);

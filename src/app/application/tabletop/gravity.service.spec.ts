@@ -2,18 +2,17 @@ import { TestBed } from '@angular/core/testing';
 import { GravityService } from '@axe/application/tabletop/gravity.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
 import { TabletopOverlapRegistryEntry, TabletopOverlapService } from '@axe/application/ui/tabletop-overlap.service';
-import { ObjectStore } from '@axe/core/sync/object-store';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { GameTable } from '@axe/domain/tabletop/game-table';
 import { TableSurface, TabletopObject } from '@axe/domain/tabletop/tabletop-object';
-import { Terrain } from '@axe/domain/tabletop/terrain';
+import { DoorStyle, Terrain } from '@axe/domain/tabletop/terrain';
 import { TEST_PROVIDERS } from '@axe/testing/test-providers';
+
+/** A registered piece drawn in an element of its own. */
+type DrawnEntry = TabletopOverlapRegistryEntry & { readonly element: HTMLElement };
 
 beforeEach(() => {
   TestBed.configureTestingModule({ providers: [...TEST_PROVIDERS] });
-  const store = ObjectStore.instance;
-  for (const obj of store.getObjects()) store.delete(obj, false);
-  store.clearDeleteHistory();
 });
 
 function makeTerrain(opts: {
@@ -26,7 +25,7 @@ function makeTerrain(opts: {
   posZ?: number;
   identifier?: string;
   surface?: TableSurface;
-}): TabletopOverlapRegistryEntry {
+}): DrawnEntry {
   const terrain = Terrain.create('t', opts.w, opts.d, opts.h, '', '', opts.identifier ?? `terrain_${opts.x}_${opts.y}`);
   terrain.location.x = opts.x;
   terrain.location.y = opts.y;
@@ -47,7 +46,7 @@ function makeCharacter(opts: {
   altitude?: number;
   posZ?: number;
   identifier?: string;
-}): TabletopOverlapRegistryEntry {
+}): DrawnEntry {
   const character = GameCharacter.create('c', opts.size ?? 1, '');
   if (opts.identifier) {
     (character as unknown as { identifier: string }).identifier = opts.identifier;
@@ -67,29 +66,57 @@ function makeCharacter(opts: {
 describe('GravityService.topZ', () => {
   it('the top of terrain is (altitude + height) * gridSize + posZ', () => {
     const entry = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, altitude: 1, posZ: 25 });
-    expect(GravityService.topZ(entry.object)).toBe((1 + 2) * 50 + 25);
+    expect(GravityService.topZ(entry.object, 50)).toBe((1 + 2) * 50 + 25);
   });
 
   it('the top of a character is altitude * gridSize + posZ, with no height of its own', () => {
     const entry = makeCharacter({ x: 0, y: 0, altitude: 1, posZ: 10 });
-    expect(GravityService.topZ(entry.object)).toBe(1 * 50 + 10);
+    expect(GravityService.topZ(entry.object, 50)).toBe(1 * 50 + 10);
   });
 });
 
 describe('GravityService.contactTopZ', () => {
   it('on the floor it matches the top, altitude included', () => {
     const entry = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, altitude: 1, posZ: 25 });
-    expect(GravityService.contactTopZ(entry.object, 'floor')).toBe(GravityService.topZ(entry.object));
+    expect(GravityService.contactTopZ(entry.object, 'floor', 50)).toBe(GravityService.topZ(entry.object, 50));
   });
 
   it('on a wall it is the offset plus the terrain height, with no altitude', () => {
     const entry = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, altitude: 1, posZ: 25 });
-    expect(GravityService.contactTopZ(entry.object, 'north-wall')).toBe(25 + 2 * 50);
+    expect(GravityService.contactTopZ(entry.object, 'north-wall', 50)).toBe(25 + 2 * 50);
   });
 
   it('on a wall anything but terrain is the offset alone, with no depth', () => {
     const entry = makeCharacter({ x: 0, y: 0, altitude: 1, posZ: 10 });
-    expect(GravityService.contactTopZ(entry.object, 'east-wall')).toBe(10);
+    expect(GravityService.contactTopZ(entry.object, 'east-wall', 50)).toBe(10);
+  });
+});
+
+describe('GravityService.contactBottomZ', () => {
+  it('on the floor it is the height the block was built at, plus what holds it up', () => {
+    const entry = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, altitude: 1, posZ: 25 });
+    expect(GravityService.contactBottomZ(entry.object, 'floor', 50)).toBe(1 * 50 + 25);
+  });
+
+  it('on a wall it is the offset alone, with no altitude', () => {
+    const entry = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, altitude: 1, posZ: 25 });
+    expect(GravityService.contactBottomZ(entry.object, 'north-wall', 50)).toBe(25);
+  });
+
+  it('is the top of anything with no depth of its own', () => {
+    const entry = makeCharacter({ x: 0, y: 0, altitude: 1, posZ: 10 });
+    expect(GravityService.contactBottomZ(entry.object, 'floor', 50)).toBe(
+      GravityService.contactTopZ(entry.object, 'floor', 50)
+    );
+  });
+});
+
+describe('GravityService on a table with cells of its own size', () => {
+  it('reads a block at the height its own table makes it', () => {
+    const entry = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, altitude: 1, posZ: 0 });
+
+    expect(GravityService.topZ(entry.object, 50)).toBe(150);
+    expect(GravityService.topZ(entry.object, 100)).toBe(300);
   });
 });
 
@@ -97,7 +124,7 @@ describe('GravityService.findSupportZ', () => {
   it('supports an object whose centre falls within the footprint of another', () => {
     const base = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 2, identifier: 'base' });
     const target = makeTerrain({ x: 50, y: 50, w: 1, d: 1, h: 1, identifier: 'target', posZ: 100 });
-    const z = GravityService.findSupportZ(target, [base, target]);
+    const z = GravityService.findSupportZ(target, [base, target], 50);
     expect(z).toBe(2 * 50);
   });
 
@@ -105,20 +132,20 @@ describe('GravityService.findSupportZ', () => {
     const low = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 1, identifier: 'low' });
     const high = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 3, identifier: 'high' });
     const target = makeTerrain({ x: 50, y: 50, w: 1, d: 1, h: 1, identifier: 'target', posZ: 200 });
-    const z = GravityService.findSupportZ(target, [low, high, target]);
+    const z = GravityService.findSupportZ(target, [low, high, target], 50);
     expect(z).toBe(3 * 50);
   });
 
   it('ignores a footprint the centre falls outside of', () => {
     const base = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, identifier: 'base' });
     const target = makeTerrain({ x: 500, y: 500, w: 1, d: 1, h: 1, identifier: 'target', posZ: 100 });
-    const z = GravityService.findSupportZ(target, [base, target]);
+    const z = GravityService.findSupportZ(target, [base, target], 50);
     expect(z).toBe(0);
   });
 
   it('never supports an object on itself', () => {
     const target = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 2, identifier: 'target', posZ: 100 });
-    const z = GravityService.findSupportZ(target, [target]);
+    const z = GravityService.findSupportZ(target, [target], 50);
     expect(z).toBe(0);
   });
 
@@ -127,16 +154,16 @@ describe('GravityService.findSupportZ', () => {
     const lower = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 1, identifier: 'lower', posZ: 0 });
     const upper = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 1, identifier: 'upper', posZ: 50 });
     // the upper is supported at 50, the top of the lower
-    expect(GravityService.findSupportZ(upper, [lower, upper])).toBe(50);
+    expect(GravityService.findSupportZ(upper, [lower, upper], 50)).toBe(50);
     // the lower is supported by the ground, since the upper is above it
-    expect(GravityService.findSupportZ(lower, [lower, upper])).toBe(0);
+    expect(GravityService.findSupportZ(lower, [lower, upper], 50)).toBe(0);
   });
 
   it('two objects side by side on the ground support neither', () => {
     const a = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 1, identifier: 'a', posZ: 0 });
     const b = makeTerrain({ x: 0, y: 0, w: 1, d: 1, h: 1, identifier: 'b', posZ: 0 });
-    expect(GravityService.findSupportZ(a, [a, b])).toBe(0);
-    expect(GravityService.findSupportZ(b, [a, b])).toBe(0);
+    expect(GravityService.findSupportZ(a, [a, b], 50)).toBe(0);
+    expect(GravityService.findSupportZ(b, [a, b], 50)).toBe(0);
   });
 });
 
@@ -158,7 +185,7 @@ describe('GravityService.isAffectedByGravity', () => {
 });
 
 describe('applying gravity through the spatial index', () => {
-  function setup(entries: TabletopOverlapRegistryEntry[]): GravityService {
+  function setup(entries: DrawnEntry[]): GravityService {
     const overlap = TestBed.inject(TabletopOverlapService);
     for (const e of entries) overlap.register(e.object, e.element);
     return TestBed.inject(GravityService);
@@ -176,6 +203,90 @@ describe('applying gravity through the spatial index', () => {
     applyNow(svc);
 
     expect(char.object.posZ).toBe(2 * 50);
+  });
+
+  it('drops a character onto terrain drawn together with others, in no element of its own', () => {
+    const base = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 2, identifier: 'base' });
+    const char = makeCharacter({ x: 50, y: 50, posZ: 300 });
+    const svc = setup([char]);
+    TestBed.inject(TabletopOverlapService).registerWithoutElement(base.object, () => undefined);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBe(2 * 50);
+  });
+
+  it('rests a character on a ramp where it stands, not level with the high end', () => {
+    const ramp = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 2, identifier: 'ramp' });
+    (ramp.object as Terrain).slopeSides = ['s'];
+    // The middle of the ramp, half way up it: a piece one cell across stands at 75 + 25.
+    const char = makeCharacter({ x: 75, y: 75, posZ: 300 });
+    const svc = setup([ramp, char]);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBeCloseTo(50);
+  });
+
+  it('rests a character at the foot of a ramp on the floor', () => {
+    const ramp = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 2, identifier: 'ramp' });
+    (ramp.object as Terrain).slopeSides = ['s'];
+    const char = makeCharacter({ x: 75, y: 175, posZ: 300 });
+    const svc = setup([ramp, char]);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBeCloseTo(0);
+  });
+
+  it('lifts a piece that came down inside a ramp back onto its surface', () => {
+    const ramp = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 2, identifier: 'ramp' });
+    (ramp.object as Terrain).slopeSides = ['s'];
+    // Let go a little under the surface, which is what snapping to the grid can leave behind
+    // when the piece lands further up the slope than it was dragged to.
+    const char = makeCharacter({ x: 75, y: 75, posZ: 40 });
+    const svc = setup([ramp, char]);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBeCloseTo(50);
+  });
+
+  it('leaves a piece kept above the ground inside a doorway where it is', () => {
+    const door = makeTerrain({ x: 0, y: 0, w: 2, d: 2, h: 3, identifier: 'door' });
+    (door.object as Terrain).doorStyle = DoorStyle.SWING;
+    (door.object as Terrain).isDoorOpen = true;
+    const char = makeCharacter({ x: 25, y: 25, posZ: 0 });
+    char.object.altitude = 1;
+    const svc = setup([door, char]);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBe(0);
+  });
+
+  it('leaves a piece kept above the ground inside a sheer face where it is', () => {
+    const cliff = makeTerrain({ x: 0, y: 0, w: 2, d: 2, h: 6, identifier: 'cliff' });
+    (cliff.object as Terrain).blocksClimb = true;
+    (cliff.object as Terrain).slopeSides = ['s'];
+    const char = makeCharacter({ x: 25, y: 25, posZ: 0 });
+    char.object.altitude = 1;
+    const svc = setup([cliff, char]);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBe(0);
+  });
+
+  it('leaves a piece kept above the ground inside a block with a level top where it is', () => {
+    const wall = makeTerrain({ x: 0, y: 0, w: 2, d: 2, h: 4, identifier: 'wall' });
+    const char = makeCharacter({ x: 25, y: 25, posZ: 0 });
+    char.object.altitude = 1;
+    const svc = setup([wall, char]);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBe(0);
   });
 
   it('leaves distant terrain out, since the index never offers it', () => {
@@ -202,8 +313,43 @@ describe('applying gravity through the spatial index', () => {
     expect(char.object.posZ).toBe(50 + 50);
   });
 
+  it('leaves a canopy at the height it was built, rather than stacking it on its trunk again', () => {
+    // what the field generator builds: a post in the middle of the square, layers of leaves
+    // over it at an altitude counted from the ground
+    const trunk = makeTerrain({ x: 100, y: 100, w: 0.4, d: 0.4, h: 3, identifier: 'trunk' });
+    const lower = makeTerrain({ x: 25, y: 25, w: 3, d: 3, h: 1, altitude: 3, identifier: 'lower' });
+    const upper = makeTerrain({ x: 50, y: 50, w: 2, d: 2, h: 1, altitude: 4, identifier: 'upper' });
+    const svc = setup([trunk, lower, upper]);
+
+    applyNow(svc);
+
+    expect(lower.object.posZ).toBe(0);
+    expect(upper.object.posZ).toBe(0);
+  });
+
+  it('still drops terrain that was lifted into the air, down to what is under it', () => {
+    const base = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 2, identifier: 'base' });
+    const falling = makeTerrain({ x: 50, y: 50, w: 1, d: 1, h: 1, altitude: 1, posZ: 300, identifier: 'falling' });
+    const svc = setup([base, falling]);
+
+    applyNow(svc);
+
+    // its altitude covers one cell of the two the base stands, so the offset makes up the rest
+    expect(falling.object.posZ).toBe(50);
+  });
+
+  it('carries a character up with the support, its altitude kept as clearance', () => {
+    const base = makeTerrain({ x: 0, y: 0, w: 4, d: 4, h: 2, identifier: 'base' });
+    const flying = makeCharacter({ x: 50, y: 50, altitude: 2, posZ: 300 });
+    const svc = setup([base, flying]);
+
+    applyNow(svc);
+
+    expect(flying.object.posZ).toBe(100);
+  });
+
   it('forces no reflow under a crowd of objects', () => {
-    const entries: TabletopOverlapRegistryEntry[] = [];
+    const entries: DrawnEntry[] = [];
     const ROWS = 10;
     const COLS = 10;
     for (let i = 0; i < ROWS; i++) {
@@ -238,6 +384,18 @@ describe('applying gravity through the spatial index', () => {
     // each element is measured once per pass, while the cache is built
     expect(postCacheReads).toBe(0);
     expect(flying.object.posZ).toBe(50);
+  });
+
+  it('measures terrain from its own footprint rather than from the page', () => {
+    const base = makeTerrain({ x: 0, y: 0, w: 2, d: 2, h: 1, identifier: 'base' });
+    Object.defineProperty(base.element, 'offsetWidth', { value: 0, configurable: true });
+    Object.defineProperty(base.element, 'offsetHeight', { value: 0, configurable: true });
+    const char = makeCharacter({ x: 25, y: 25, posZ: 200 });
+    const svc = setup([base, char]);
+
+    applyNow(svc);
+
+    expect(char.object.posZ).toBe(50);
   });
 
   it('can be scheduled again once the microtasks from the last pass have drained', async () => {

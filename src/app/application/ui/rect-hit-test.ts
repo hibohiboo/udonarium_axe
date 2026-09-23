@@ -21,6 +21,10 @@ interface SizedObject {
 const DEFAULT_GRID_SIZE = 50;
 const DEFAULT_EXCLUDES = ['range'];
 
+/**
+ * The same rectangle with its corners ordered, so x1/y1 is the top-left whichever way it was
+ * dragged.
+ */
 export function normalizeRect(rect: TableRect): TableRect {
   const x1 = Math.min(rect.x1, rect.x2);
   const x2 = Math.max(rect.x1, rect.x2);
@@ -46,6 +50,13 @@ function getObjectExtent(obj: TabletopObject, gridSize: number): { width: number
   return { width, height };
 }
 
+/**
+ * The identifiers of pieces on the table whose centres fall inside a marquee rectangle.
+ *
+ * A piece's extent comes from its `width` and `height`, or its `size`, in grid cells, and is one
+ * cell otherwise. Pieces off the table and the excluded aliases, ranges by default, are never
+ * caught.
+ */
 export function selectByRect(
   objects: readonly TabletopObject[],
   rect: TableRect,
@@ -68,4 +79,23 @@ export function selectByRect(
     hits.push(obj.identifier);
   }
   return hits;
+}
+
+/** What a marquee does with what it caught: put it in, take it out, or stand in for the lot. */
+export type MarqueeApply = 'add' | 'toggle' | 'replace';
+
+/**
+ * How a marquee's catch joins what is already picked out.
+ *
+ * A finger has no keys to hold, so a second marquee drawn while something is already picked
+ * out toggles what it catches rather than replacing it. Starting again is a tap on bare
+ * table, which puts the selection down and lets the next marquee stand in for the lot.
+ */
+export function marqueeApply(
+  modifiers: { shift: boolean; ctrl: boolean; touch: boolean },
+  hasSelection: boolean
+): MarqueeApply {
+  if (modifiers.shift) return 'add';
+  if (modifiers.ctrl || (modifiers.touch && hasSelection)) return 'toggle';
+  return 'replace';
 }

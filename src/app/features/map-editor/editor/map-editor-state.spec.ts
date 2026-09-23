@@ -1,15 +1,18 @@
 import { GridType } from '@axe/domain/tabletop/game-table';
 import { MapEditorState } from '@axe/features/map-editor/editor/map-editor-state';
 import { sampleCurvePoints } from '@axe/features/map-editor/model/curve-geometry';
+import { DEFAULT_FUNCTION_SPEC } from '@axe/features/map-editor/model/function-layer';
 import {
   CellLayer,
   DEFAULT_SCENE_BACKGROUND,
   DEFAULT_SCENE_GRID_COLOR,
   FreehandLayer,
+  FunctionLayer,
   ImageItem,
   ImageLayer,
   ShapeLayer,
   StampLayer,
+  TextLayer,
 } from '@axe/features/map-editor/model/scene';
 
 describe('MapEditorState', () => {
@@ -81,6 +84,32 @@ describe('MapEditorState', () => {
     expect(state.canRedo()).toBe(false);
     const layer = state.current.layers[0] as CellLayer;
     expect(Object.keys(layer.cells).length).toBe(1);
+  });
+
+  it('takes a retexture of a painted layer back on its own, without the painting with it', () => {
+    state.beginGesture();
+    state.paintFunctionCell(0, 0);
+    state.endGesture();
+    const painted = state.current.layers[0] as FunctionLayer;
+    const first = painted.spec.terrain.name;
+
+    state.setFunctionSpec({ ...state.functionSpec(), terrain: { ...state.functionSpec().terrain, name: '石壁' } });
+    expect((state.current.layers[0] as FunctionLayer).spec.terrain.name).toBe('石壁');
+
+    state.undo();
+
+    expect((state.current.layers[0] as FunctionLayer).spec.terrain.name).toBe(first);
+    expect(Object.keys((state.current.layers[0] as FunctionLayer).cells)).toEqual(['0,0']);
+  });
+
+  it('names a layer it starts for a painted cell rather than calling it by its role', () => {
+    state.functionRole.set('terrain');
+    state.beginGesture();
+    state.paintFunctionCell(0, 0);
+    state.endGesture();
+
+    // Two layers of wall in different stone read as two 'terrain' rows in the drawer otherwise.
+    expect(state.current.layers[0].name).not.toBe('terrain');
   });
 
   it('clears the history for a new scene', () => {
@@ -337,6 +366,35 @@ describe('MapEditorState', () => {
     expect(layer.items.length).toBe(0);
   });
 
+  it('takes hold of Japanese words by their right half as well', () => {
+    state.fontSize.set(20);
+    state.addTextItem(100, 50, 'あいうえお');
+    const layer = state.current.layers.find((l) => l.kind === 'text') as TextLayer;
+    const id = layer.items[0].id;
+
+    expect(state.hitTest(190, 60)?.itemId).toBe(id);
+    expect(state.hitTest(210, 60)).toBeNull();
+  });
+
+  it('takes hold of a rectangle dragged out backwards', () => {
+    state.snapEnabled.set(false);
+    state.addShapeItem('rect', [100, 80, -60, -30], null);
+    const layer = state.current.layers.find((l) => l.kind === 'shape') as ShapeLayer;
+
+    expect(state.hitTest(50, 60)?.itemId).toBe(layer.items[0].id);
+    expect(state.hitTest(120, 60)).toBeNull();
+  });
+
+  it('reaches a little past half a wide line, and no further', () => {
+    state.snapEnabled.set(false);
+    state.strokeWidth.set(20);
+    state.addShapeItem('polyline', [0, 0, 100, 0], null);
+    const layer = state.current.layers.find((l) => l.kind === 'shape') as ShapeLayer;
+
+    expect(state.hitTest(50, 12)?.itemId).toBe(layer.items[0].id);
+    expect(state.hitTest(50, 13)).toBeNull();
+  });
+
   it('hit tests a curve along the spline rather than the chord', () => {
     state.snapEnabled.set(false);
     state.strokeWidth.set(4);
@@ -401,5 +459,49 @@ describe('MapEditorState', () => {
     state.textureRotation.set(45);
     const fill = state.currentFill();
     expect(fill).toEqual({ type: 'texture', textureId: 'image:abc123', scale: 2, rotation: 45 });
+  });
+});
+
+describe('taking a layer of functions in hand', () => {
+  it('takes the brush that painted it, so its settings are the ones on show', () => {
+    const state = new MapEditorState();
+    state.functionRole.set('trigger');
+    state.setFunctionSpec({
+      ...DEFAULT_FUNCTION_SPEC,
+      trigger: { ...DEFAULT_FUNCTION_SPEC.trigger, element: 'HP', amount: '2d6' },
+    });
+    state.paintFunctionCell(1, 1);
+    const painted = state.current.layers.find((layer) => layer.kind === 'function')!;
+
+    // Let go of it before taking up another brush, or changing the brush would repaint it.
+    state.setActiveLayer(null);
+    state.setFunctionSpec({ ...DEFAULT_FUNCTION_SPEC });
+    state.setActiveLayer(painted.id);
+
+    expect(state.functionSpec().trigger).toMatchObject({ element: 'HP', amount: '2d6' });
+  });
+
+  it('puts the tool that works on it in hand, so the settings can be reached at all', () => {
+    const state = new MapEditorState();
+    state.functionRole.set('trigger');
+    state.paintFunctionCell(1, 1);
+    const painted = state.current.layers.find((layer) => layer.kind === 'function')!;
+    state.tool.set('select');
+
+    state.setActiveLayer(painted.id);
+
+    expect(state.tool()).toBe('functionPaint');
+  });
+
+  it('leaves the eraser in hand where that is the one being used on it', () => {
+    const state = new MapEditorState();
+    state.functionRole.set('trigger');
+    state.paintFunctionCell(1, 1);
+    const painted = state.current.layers.find((layer) => layer.kind === 'function')!;
+    state.tool.set('functionErase');
+
+    state.setActiveLayer(painted.id);
+
+    expect(state.tool()).toBe('functionErase');
   });
 });

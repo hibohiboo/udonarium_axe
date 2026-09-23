@@ -10,6 +10,60 @@ export interface Segment {
   y2: number;
 }
 
+/**
+ * A segment that stands between a bottom and a top.
+ *
+ * Left out, `heightPx` reaches high enough to stop anything: the edge of the table, and
+ * anything whose height nobody has said. Left out, `basePx` stands on the floor.
+ */
+export interface TallSegment extends Segment {
+  heightPx?: number;
+  basePx?: number;
+}
+
+/** Whether a segment hangs clear of the floor, with a way through underneath it. */
+export function segmentFloats(seg: TallSegment): boolean {
+  return seg.basePx !== undefined && seg.basePx > 0;
+}
+
+/**
+ * The answers `segmentsAbove` has given, held against the list they were drawn from, so a scene
+ * that is asked the same question by every piece on it pays for it once. A list is built whole and
+ * never added to afterwards, and the answers go when it does.
+ */
+const aboveByList = new WeakMap<readonly TallSegment[], Map<number, readonly TallSegment[]>>();
+
+/** Well above the handful of eye heights one scene holds, and a guard against an unbounded map. */
+const ABOVE_MEMO_LIMIT = 64;
+
+/**
+ * The segments that still stand in the way of an eye at this height: those at least as tall as the
+ * eye, those of unknown height, and those hanging clear of the floor.
+ *
+ * Anything shorter than the eye is looked over, and a character who has climbed a tower is above
+ * most of what stood in the way on the ground. An eye at or below the floor gets the list back
+ * unchanged. The same list and height hand back the same array, so it must not be changed.
+ */
+export function segmentsAbove(segments: readonly TallSegment[], eyeZ: number): readonly TallSegment[] {
+  if (!(eyeZ > 0)) return segments;
+
+  let byEye = aboveByList.get(segments);
+  if (!byEye) {
+    byEye = new Map();
+    aboveByList.set(segments, byEye);
+  }
+  const remembered = byEye.get(eyeZ);
+  if (remembered) return remembered;
+
+  // Level with the top is not above it: an eye at the height of a wall sees none of the far
+  // side, and a character standing on something is above it by its own eye height anyway.
+  const above = segments.filter((seg) => seg.heightPx === undefined || seg.heightPx >= eyeZ || segmentFloats(seg));
+  if (byEye.size >= ABOVE_MEMO_LIMIT) byEye.clear();
+  byEye.set(eyeZ, above);
+  return above;
+}
+
+/** The four edges of a rectangle turned about its centre by the given degrees. */
 export function rectangleSegments(x: number, y: number, width: number, height: number, rotateDeg: number): Segment[] {
   const cx = x + width / 2;
   const cy = y + height / 2;
@@ -34,6 +88,7 @@ export function rectangleSegments(x: number, y: number, width: number, height: n
   return segments;
 }
 
+/** The four edges of the table, so that no look or light leaves it. */
 export function perimeterSegments(widthPx: number, heightPx: number): Segment[] {
   return rectangleSegments(0, 0, widthPx, heightPx, 0);
 }
@@ -42,6 +97,10 @@ function cross(ax: number, ay: number, bx: number, by: number, cx: number, cy: n
   return (by - ay) * (cx - bx) - (bx - ax) * (cy - by);
 }
 
+/**
+ * Whether segment AB and segment CD properly cross. Touching at an end, or lying along one another,
+ * does not count.
+ */
 export function segmentsCross(
   ax: number,
   ay: number,
@@ -59,6 +118,75 @@ export function segmentsCross(
   return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
 }
 
+/**
+ * How far along AB the two segments meet, or nothing if they do not.
+ *
+ * The same crossing test, keeping the number it already worked out rather than throwing it
+ * away: it is what says how high a line of sight has risen where something stands in it.
+ */
+export function crossingAlong(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number,
+  dx: number,
+  dy: number
+): number | null {
+  const d1 = cross(cx, cy, dx, dy, ax, ay);
+  const d2 = cross(cx, cy, dx, dy, bx, by);
+  const d3 = cross(ax, ay, bx, by, cx, cy);
+  const d4 = cross(ax, ay, bx, by, dx, dy);
+  const crosses = ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  if (!crosses) return null;
+  return d1 / (d1 - d2);
+}
+
+/**
+ * Whether a line of sight from one height to another clears everything standing in it.
+ *
+ * A wall stops a look only where the look passes through it: a head on a roof is seen over the
+ * parapet from far enough back and not from the foot of it, and a look that ducks under a
+ * bridge comes out the far side.
+ */
+export function segmentBlocks(
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+  seg: TallSegment
+): boolean {
+  const at = crossingAlong(ax, ay, bx, by, seg.x1, seg.y1, seg.x2, seg.y2);
+  if (at === null) return false;
+  const z = az + (bz - az) * at;
+  if (seg.basePx !== undefined && z < seg.basePx) return false;
+  if (seg.heightPx === undefined) return true;
+  return seg.heightPx >= z;
+}
+
+/**
+ * Whether a line of sight from one point and height to another passes every segment, with the
+ * heights taken into account.
+ */
+export function segmentClearBetween(
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+  segments: readonly TallSegment[]
+): boolean {
+  for (const seg of segments) {
+    if (segmentBlocks(ax, ay, az, bx, by, bz, seg)) return false;
+  }
+  return true;
+}
+
+/** Whether a flat line from A to B crosses none of the segments, with heights ignored. */
 export function segmentClear(ax: number, ay: number, bx: number, by: number, segments: readonly Segment[]): boolean {
   for (const seg of segments) {
     if (segmentsCross(ax, ay, bx, by, seg.x1, seg.y1, seg.x2, seg.y2)) return false;

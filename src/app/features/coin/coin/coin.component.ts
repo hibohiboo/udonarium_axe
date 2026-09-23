@@ -12,10 +12,12 @@ import {
 } from '@angular/core';
 import { CoinFlipService } from '@axe/application/coin/coin-flip.service';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { RolePermissionService } from '@axe/application/permission/role-permission.service';
 import { ImageService } from '@axe/application/storage/image.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
+import { VisionService } from '@axe/application/tabletop/vision.service';
 import { ContextMenuSeparator, ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
 import { PieceContextMenuService } from '@axe/application/ui/piece-context-menu.service';
@@ -23,7 +25,6 @@ import { SelectionSignalService } from '@axe/application/ui/selection-signal.ser
 import { sheetPanelBox } from '@axe/application/ui/sheet-panel';
 import { sheetPanelTitle } from '@axe/application/ui/sheet-panel';
 import { buildSurfaceSwitchContextMenu } from '@axe/application/ui/surface-switch-context-menu';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { imageFileEqual } from '@axe/core/storage/image-file';
 import { Coin, CoinFace } from '@axe/domain/coin/coin';
 import { PresetSound, SoundEffect } from '@axe/domain/media/sound-effect';
@@ -49,6 +50,7 @@ const MIN_THICKNESS_PX = 5;
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [MovableDirective, RotableDirective, SelectableDirective, NgStyle, SafePipe],
   host: {
+    '[style.display]': "isHiddenByFog() ? 'none' : null",
     class: 'block',
     '(dragstart)': 'onDragstart($event)',
     '(contextmenu)': 'onContextMenu($event)',
@@ -65,9 +67,17 @@ export class CoinComponent {
   private readonly pointerDeviceService = inject(PointerDeviceService);
   private readonly selectionSignalService = inject(SelectionSignalService);
   private readonly objectChange = inject(ObjectChangeService);
+  private readonly visionService = inject(VisionService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly translateFn = inject(TRANSLATE_FN);
   private readonly coinFlip = inject(CoinFlipService);
+
+  readonly isHiddenByFog = computed(() => {
+    const piece = this.coin();
+    if (!piece) return false;
+    this.objectChange.versionOf(piece.identifier)();
+    return this.visionService.isPieceHiddenByFog(piece, this.size());
+  });
 
   readonly coin = input.required<Coin>();
 
@@ -75,9 +85,11 @@ export class CoinComponent {
 
   private readonly spin = signal<{ from: CoinFace; to: CoinFace } | null>(null);
 
+  /** Whether the coin is locked in place, which stops it being dragged. */
   get isLock(): boolean {
     return this.coin().isLock;
   }
+  /** The table's grid cell size in pixels, which the coin's diameter and a copy's offset are measured in. */
   get gridSize(): number {
     return this.tabletopService.gridSize();
   }
@@ -185,35 +197,50 @@ export class CoinComponent {
     this.destroyRef.onDestroy(() => this.doubleTap.cancel());
   }
 
+  /** Ends the flip animation, after which the coin shows the face it is really on. */
   onSpinEnd() {
     this.isSpinning.set(false);
     this.spin.set(null);
   }
 
+  /** Stops the browser's own drag of the coin's element, so only the table's drag moves it. */
   onDragstart(e: DragEvent) {
     e.stopPropagation();
     e.preventDefault();
   }
 
+  /** On a press on the coin, brings it to the top and starts watching for a double tap. */
   onInputStart(e: MouseEvent | TouchEvent) {
     this.startDoubleClickTimer(e);
     this.coin().toTopmost();
   }
 
+  /** Counts a press towards a double tap, which flips the coin when the second one lands. */
   startDoubleClickTimer(e: MouseEvent | TouchEvent) {
     this.doubleTap.handle(e, () => this.onDoubleClick());
   }
 
+  /** Flips the coin on a double tap, if this player may edit the table and the pointer has not moved. */
   onDoubleClick() {
     this.doubleTap.cancel();
     if (!this.rolePermission.canEditTabletop) return;
     if (this.doubleTap.isInPlace()) this.flip();
   }
 
+  /**
+   * Tosses the coin to a random face.
+   *
+   * Every peer sees it spin, the face is synced, and the result is announced in chat shortly after.
+   */
   flip() {
     this.coinFlip.flip(this.coin());
   }
 
+  /**
+   * Opens the coin's right-click menu, with the table-switching entries after it where there are any.
+   *
+   * When several pieces are selected, the menu for the selection opens instead.
+   */
   onContextMenu(e: Event) {
     e.stopPropagation();
     e.preventDefault();
@@ -243,10 +270,12 @@ export class CoinComponent {
     );
   }
 
+  /** Plays the pick-up sound when a drag or a turn of the coin begins. */
   onMove() {
     SoundEffect.play(PresetSound.piecePick);
   }
 
+  /** Plays the put-down sound when a drag or a turn of the coin ends. */
   onMoved() {
     SoundEffect.play(PresetSound.piecePut);
   }

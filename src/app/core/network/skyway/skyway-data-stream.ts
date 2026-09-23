@@ -20,6 +20,12 @@ import {
 } from '@skyway-sdk/core';
 import { EventEmitter } from 'eventemitter3';
 
+/** How much the channel may already be holding before the queue waits for it to drain. */
+const SEND_BUFFER_LIMIT_BYTES = 1024 * 1024;
+
+/** How long the queue waits before asking a full channel again. */
+const SEND_RETRY_MS = 50;
+
 interface Ping {
   from: string;
   ping: number;
@@ -35,9 +41,11 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
 
   private stats: WebRTCStats | null = null;
 
+  /** Whether the data channel to the peer is open. */
   get open(): boolean {
     return this.peer.isOpen;
   }
+  /** The peer's member entry in the SkyWay room, or undefined when it is not in the room. */
   get member(): RemoteMember | undefined {
     return this.skyWay.room?.members.find(
       (member): member is RemoteMember => isRemoteMember(member) && member.name === this.peer.peerId
@@ -48,6 +56,7 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
   private sendQueue: Set<Uint8Array> = new Set();
 
   private _timestamp: number = performance.now();
+  /** When data last came from the peer (performance.now()), used to spot a dead connection. */
   get timestamp(): number {
     return this._timestamp;
   }
@@ -55,11 +64,13 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     this._timestamp = timestamp;
   }
 
+  /** Counts the peer as heard from just now, restarting the clock for marking it dead. */
   resetTimestamp(): void {
     this._timestamp = performance.now();
   }
 
   private _ping: number = 0;
+  /** Smoothed round-trip time to the peer in ms, measured by pings sent with stats updates. */
   get ping(): number {
     return this._ping;
   }
@@ -68,6 +79,7 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
   }
 
   private _candidateType: CandidateType = CandidateType.UNKNOWN;
+  /** The ICE candidate type the connection runs over as of the last stats update; relay means TURN. */
   get candidateType(): CandidateType {
     return this._candidateType;
   }
@@ -108,6 +120,7 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     this.peer.password = peer.password;
   }
 
+  /** A stream answering a peer that subscribed to this device's data publication. */
   static createPublication(skyWay: SkyWayFacade, peer: IPeerContext): SkyWayDataStream {
     const instance = new SkyWayDataStream(skyWay, peer);
     instance.sortKey = instance.skyWay.peer.peerId;
@@ -115,6 +128,7 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     return instance;
   }
 
+  /** A stream this device starts by subscribing to the peer's data publication. */
   static createSubscription(skyWay: SkyWayFacade, peer: IPeerContext): SkyWayDataStream {
     const instance = new SkyWayDataStream(skyWay, peer);
     instance.sortKey = instance.peer.peerId;
@@ -122,6 +136,12 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     return instance;
   }
 
+  /**
+   * Sets the stream up and reports progress through its open, close and data events.
+   *
+   * A subscription subscribes to the peer's publication, waiting for it to be published if need be;
+   * a publication attaches to the subscription the peer already made.
+   */
   connect() {
     if (this.isPublication) {
       return this.initializePublication();
@@ -130,6 +150,12 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     }
   }
 
+  /**
+   * Closes the stream.
+   *
+   * An open stream is disposed at once, with its listeners removed and no close event. One that has
+   * not opened yet has its channel closed as soon as it appears.
+   */
   disconnect() {
     this.isCanceled = true;
     if (this.isOpened) {
@@ -139,6 +165,7 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     }
   }
 
+  /** Refuses the peer's connection, setting the stream up only to close its channel straight away. */
   reject() {
     this.isRejected = true;
     this.connect();
@@ -325,6 +352,11 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     }
   }
 
+  /**
+   * Queues data for the peer, split into chunks of about 15.5 KB when larger.
+   *
+   * The queue is fed to the channel as its buffer drains, and waits while the channel is not open.
+   */
   send(data: unknown) {
     const encodedData: Uint8Array = MessagePack.encode(data);
 
@@ -348,24 +380,42 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     if (!this.isQueuing) this.execQueue();
   }
 
+  /**
+   * Sends what is queued, as much of it as the channel will take.
+   *
+   * A message larger than a chunk is queued in pieces. Sending one piece per turn of the event
+   * loop would send a picture at the speed the browser gets round to it rather than the speed
+   * the line can carry, so the channel is asked how much it is already holding and fed until
+   * that reaches the limit, which is what keeps a slow line from being buried.
+   *
+   * A pass that got nothing away waits on the clock before trying again. Coming straight
+   * back would turn a full channel into a loop that holds the main thread doing nothing
+   * until the line drains, which on a slow one is seconds.
+   */
   private execQueue = () => {
     if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
       this.isQueuing = false;
       return;
     }
+    let sent = 0;
     for (const data of this.sendQueue) {
+      if ((this.dataChannel.bufferedAmount ?? 0) >= SEND_BUFFER_LIMIT_BYTES) break;
       try {
         this.dataChannel.send(data as unknown as ArrayBufferView<ArrayBuffer>);
         this.sendQueue.delete(data);
+        sent += 1;
       } catch (err) {
         Logger.error('[SkyWay] データ送信エラー', err);
+        break;
       }
-      break;
     }
     this.isQueuing = this.sendQueue.size > 0;
-    if (this.isQueuing) setZeroTimeout(this.execQueue);
+    if (!this.isQueuing) return;
+    if (sent > 0) setZeroTimeout(this.execQueue);
+    else setTimeout(this.execQueue, SEND_RETRY_MS);
   };
 
+  /** The RTCPeerConnection under the stream, for reading WebRTC stats; undefined until established. */
   getPeerConnection(): RTCPeerConnection | undefined {
     if (this.isPublication) {
       const member = this.member;
@@ -384,6 +434,12 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     WebRTCStatsMonitor.remove(this);
   }
 
+  /**
+   * Refreshes the peer's session figures (ping, health, speed, grade) and emits stats.
+   *
+   * The stats monitor calls it every few seconds, and it sends a ping each time. A peer silent for
+   * 25 seconds is marked closed and close is emitted instead.
+   */
   async updateStatsAsync() {
     if (this.stats == null) this.stats = this.createStats();
     this.sendPing();
@@ -429,6 +485,7 @@ export class SkyWayDataStream extends EventEmitter implements WebRTCConnection {
     return peerConnection ? new WebRTCStats(peerConnection) : null;
   }
 
+  /** Sends a timestamped ping that the peer echoes back, from which ping is measured. */
   sendPing() {
     const encodedData: Uint8Array = MessagePack.encode({
       from: this.skyWay.peer.peerId,

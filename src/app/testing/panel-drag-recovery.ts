@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, Type, viewChild, ViewContainerRef } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { UIPanelComponent } from '@axe/ui/components/ui-panel/ui-panel.component';
 
 export interface PanelDragRecoveryOptions<T> {
@@ -12,6 +12,7 @@ export interface PanelDragRecoveryOptions<T> {
 
 @Component({
   standalone: true,
+  selector: 'panel-drag-test-host',
   changeDetection: ChangeDetectionStrategy.Eager,
   template: '<ng-template #layer></ng-template>',
 })

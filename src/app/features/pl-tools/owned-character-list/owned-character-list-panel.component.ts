@@ -1,17 +1,19 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
 import { PartyService } from '@axe/application/party/party.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { TableFocusService } from '@axe/application/tabletop/table-focus.service';
 import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { matchesSearchText, normalizeSearchText, splitSearchTerms } from '@axe/core/util/text-search';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { DataElement } from '@axe/domain/data/data-element';
 import { Party } from '@axe/domain/party/party';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { ChatPaletteRegistryService } from '@axe/features/chat/chat-palette/chat-palette-registry.service';
+import { ObjectPanelService } from '@axe/features/panels/object-panel.service';
 import { ActiveCharacterService } from '@axe/features/pl-tools/active-character.service';
-import { CharacterPanelService } from '@axe/features/pl-tools/character-panel.service';
 import { resourceElementsOf, resourceMax } from '@axe/features/pl-tools/owned-character-list/character-resources';
 import { isOnTable, selectOwnedCharacters } from '@axe/features/pl-tools/owned-character-list/owned-characters';
 import { SafePipe } from '@axe/ui/pipes/safe.pipe';
@@ -28,7 +30,8 @@ export class OwnedCharacterListPanelComponent {
   private readonly objectStore = inject(ObjectStore);
   private readonly objectChange = inject(ObjectChangeService);
   private readonly selectionSignalService = inject(SelectionSignalService);
-  private readonly characterPanel = inject(CharacterPanelService);
+  private readonly tableFocus = inject(TableFocusService);
+  private readonly objectPanels = inject(ObjectPanelService);
   private readonly registry = inject(ChatPaletteRegistryService);
   private readonly partyService = inject(PartyService);
   protected readonly activeCharacter = inject(ActiveCharacterService);
@@ -36,11 +39,21 @@ export class OwnedCharacterListPanelComponent {
 
   readonly characters = computed<GameCharacter[]>(() => {
     this.objectChange.collectionOf(GameCharacter.aliasName)();
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     const userId = PeerCursor.myCursor?.userId ?? '';
     const all = this.objectStore.getObjects<GameCharacter>(GameCharacter);
     for (const character of all) this.objectChange.versionOf(character.identifier)();
     return selectOwnedCharacters(all, userId);
+  });
+
+  readonly search = signal('');
+
+  readonly filteredCharacters = computed<GameCharacter[]>(() => {
+    const terms = splitSearchTerms(this.search());
+    if (terms.length < 1) return this.characters();
+    return this.characters().filter((character) =>
+      matchesSearchText(normalizeSearchText(this.displayName(character)), terms)
+    );
   });
 
   protected imageUrl(character: GameCharacter): string {
@@ -93,20 +106,20 @@ export class OwnedCharacterListPanelComponent {
   }
 
   protected openChatPalette(character: GameCharacter): void {
-    this.characterPanel.openChatPalette(character);
+    this.objectPanels.openChatPalette(character);
   }
 
   protected openSheet(character: GameCharacter): void {
-    this.characterPanel.openSheet(character);
+    this.objectPanels.openCharacterSheet(character);
   }
 
   protected openRemoteController(character: GameCharacter): void {
-    this.characterPanel.openRemoteController(character);
+    this.objectPanels.openRemoteController(character);
   }
 
   protected focusToKoma(character: GameCharacter): void {
     if (!this.canFocus(character)) return;
     this.selectionSignalService.selectObject(character.identifier, character.aliasName);
-    this.selectionSignalService.focusToCoordinate(character.location.x, character.location.y);
+    this.tableFocus.focusOn(character);
   }
 }

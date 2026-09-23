@@ -1,3 +1,4 @@
+import { GameObject } from '@axe/core/sync/game-object';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { EffectKind, EffectTargeting, ProjectileStyle, SlashStyle } from '@axe/domain/effect/effect-kind';
 import { EffectPreset } from '@axe/domain/effect/effect-preset';
@@ -52,7 +53,7 @@ const MAX_EFFECT_MS = 6000;
 
 /**
  * A few runs built out of stages, so what the editor can do is on the shelf rather than
- * only in the manual. Every part of them is a look that was already there.
+ * only in the manual. Every part of them is a look the tool already draws.
  */
 const STAGED_SEEDS: readonly EffectPresetSeed[] = [
   {
@@ -1654,13 +1655,28 @@ export function applyEffectPresetSeed(preset: EffectPreset, seed: EffectPresetSe
   preset.stages = encodeEffectStages(seed.stages ?? []);
 }
 
+/**
+ * Makes an effect from a seed and adds it to the room, under the given identifier or a fresh one.
+ *
+ * The fields are written inside one batch, so the new effect is announced once rather than
+ * once per field.
+ */
 export function createEffectPreset(seed: EffectPresetSeed, identifier?: string): EffectPreset {
-  const preset = new EffectPreset(identifier);
-  applyEffectPresetSeed(preset, seed);
-  preset.initialize();
-  return preset;
+  return GameObject.batch(() => {
+    const preset = new EffectPreset(identifier);
+    applyEffectPresetSeed(preset, seed);
+    preset.initialize();
+    return preset;
+  });
 }
 
+/**
+ * Puts every built-in effect on the shelf, as a room starts with them.
+ *
+ * Each is made under the seed's fixed identifier, so the defaults are the same effects at
+ * every table. Where that identifier has been deleted in this room and cannot be taken again,
+ * the effect is made under a fresh one instead.
+ */
 export function createDefaultEffectPresets(): EffectPreset[] {
   return DEFAULT_EFFECT_PRESET_SEEDS.map((seed) => {
     const preset = createEffectPreset(seed, seed.identifier);

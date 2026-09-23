@@ -13,7 +13,10 @@ export class EffectField extends TabletopObject {
   @SyncVar() presetIdentifier: string = '';
   /** One side, in cells, measured as a piece is. The size of the effect follows from the scale. */
   @SyncVar() size: number = 1;
+  /** The hotbar slot that put this here, so the same slot can take it away again later. */
+  @SyncVar() laidByHotbarSlot: string = '';
 
+  /** Every standing effect in the room. */
   static list(): EffectField[] {
     return ObjectStore.instance.getObjects<EffectField>(EffectField);
   }

@@ -3,6 +3,7 @@ import { Network } from '@axe/core/index';
 import { resetPeerContextProvider } from '@axe/core/network/peer-context-source';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
+import { PeerRole } from '@axe/domain/peer/peer-role';
 
 describe('PeerCursor', () => {
   let store: ObjectStore;
@@ -12,18 +13,12 @@ describe('PeerCursor', () => {
     // It is put back each time, in case another spec left a stub behind.
     resetPeerContextProvider();
     store = ObjectStore.instance;
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     PeerCursor.myCursor = null!;
     (PeerCursor as unknown as Record<string, unknown>)['userIdMap'] = new Map();
     (PeerCursor as unknown as Record<string, unknown>)['peerIdMap'] = new Map();
   });
 
   afterEach(() => {
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     PeerCursor.myCursor = null!;
     (PeerCursor as unknown as Record<string, unknown>)['userIdMap'] = new Map();
     (PeerCursor as unknown as Record<string, unknown>)['peerIdMap'] = new Map();
@@ -122,30 +117,6 @@ describe('PeerCursor', () => {
     });
   });
 
-  describe('diceImageIdentifier', () => {
-    it('returns nothing without a kind of die', () => {
-      const cursor = new PeerCursor();
-      cursor.initialize();
-      expect(cursor.diceImageIdentifier).toBe('');
-    });
-
-    it('builds the identifier from that kind and its index', () => {
-      const cursor = new PeerCursor();
-      cursor.initialize();
-      cursor.diceImageType = 'normal';
-      cursor.diceImageIndex = 3;
-      expect(cursor.diceImageIdentifier).toBe('normal_dice[03]');
-    });
-
-    it('pads a single-digit index', () => {
-      const cursor = new PeerCursor();
-      cursor.initialize();
-      cursor.diceImageType = 'star';
-      cursor.diceImageIndex = 0;
-      expect(cursor.diceImageIdentifier).toBe('star_dice[00]');
-    });
-  });
-
   describe('isMine', () => {
     it('is false before your own cursor is set', () => {
       const cursor = new PeerCursor();
@@ -182,10 +153,23 @@ describe('PeerCursor', () => {
       expect(cursor.peerId).toBe(Network.peerId);
     });
 
-    it('returns the one that is there already', () => {
-      const cursor1 = PeerCursor.createMyCursor();
-      const cursor2 = PeerCursor.createMyCursor();
-      expect(cursor1).toBe(cursor2);
+    it('builds a new one rather than handing back the one already there', () => {
+      const first = PeerCursor.createMyCursor();
+      first.role = PeerRole.GameMaster;
+
+      const second = PeerCursor.createMyCursor();
+
+      expect(second).not.toBe(first);
+      expect(second.role).toBe(PeerRole.Player);
+      expect(PeerCursor.myCursor).toBe(second);
+    });
+
+    it('takes the one it replaced off the table', () => {
+      const first = PeerCursor.createMyCursor();
+
+      PeerCursor.createMyCursor();
+
+      expect(store.get(first.identifier)).toBeNull();
     });
 
     it('and marks it connected, since you have not dropped', () => {
@@ -221,22 +205,6 @@ describe('PeerCursor', () => {
       expect(cursor.userId).toBe('');
       expect(PeerCursor.findByUserId('')).toBeNull();
       expect(PeerCursor.findByPeerId('')).toBeNull();
-    });
-  });
-
-  describe('isPeerAUdon', () => {
-    it('is true for a peer of this tool', () => {
-      const cursor = new PeerCursor();
-      cursor.initialize();
-      cursor.peerId = 'UDoNarium';
-      expect(cursor.isPeerAUdon()).toBe(true);
-    });
-
-    it('is false for any other', () => {
-      const cursor = new PeerCursor();
-      cursor.initialize();
-      cursor.peerId = 'test-peer';
-      expect(cursor.isPeerAUdon()).toBe(false);
     });
   });
 

@@ -1,5 +1,10 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
+import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { ContextMenuAction, ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { ImageStorage } from '@axe/core/storage/image-storage';
+import { ObjectNode } from '@axe/core/sync/object-node';
 import {
   DataElement,
   DataElementAttribute,
@@ -46,6 +51,212 @@ describe('GameDataElementComponent', () => {
 
   it('should create', () => {
     expect(component).toBeTruthy();
+  });
+
+  describe('a long text being edited', () => {
+    function edit(fieldType: string): HTMLElement {
+      const field = DataElement.create('効果', '判定に成功した', {
+        [DataElementAttribute.ROLE]: DataElementRole.FIELD,
+        [DataElementAttribute.FIELD_TYPE]: fieldType,
+      });
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', field);
+      fixture.detectChanges();
+      return fixture.nativeElement as HTMLElement;
+    }
+
+    it('gets ten lines of its own under the row, which it can be stretched from', () => {
+      const host = edit(DataElementFieldType.LONG_TEXT);
+      const content = host.querySelector('.elm-value-content')!;
+      const textarea = host.querySelector('textarea[name="data-value"]')!;
+
+      expect(content.classList.contains('gde-editing')).toBe(false);
+      expect(content.classList).toContain('row-start-2');
+      expect(textarea.classList).toContain('min-h-[calc(10lh+0.5rem+2px)]');
+      expect(textarea.classList).toContain('resize-y');
+      expect(textarea.classList).toContain('whitespace-pre-wrap');
+    });
+
+    it('leaves the other kinds of field on the one line beside the buttons', () => {
+      const content = edit(DataElementFieldType.TEXT).querySelector('.elm-value-content')!;
+
+      expect(content.classList.contains('gde-editing')).toBe(true);
+      expect(content.classList.contains('row-start-2')).toBe(false);
+    });
+
+    it('is drawn as before outside editing', () => {
+      const field = DataElement.create('効果', '判定に成功した', {
+        [DataElementAttribute.ROLE]: DataElementRole.FIELD,
+        [DataElementAttribute.FIELD_TYPE]: DataElementFieldType.LONG_TEXT,
+      });
+      fixture.componentRef.setInput('gameDataElement', field);
+      fixture.detectChanges();
+      const textarea = (fixture.nativeElement as HTMLElement).querySelector('textarea[name="data-value"]')!;
+
+      expect(textarea.classList).toContain('resize-none');
+      expect(textarea.classList.contains('resize-y')).toBe(false);
+    });
+  });
+
+  describe('the icon picker', () => {
+    it('lifts the heading it opens from above the headings of the children', () => {
+      const group = DataElement.create('頭', '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
+      const row = DataElement.create('義眼', '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
+      row.appendChild(
+        DataElement.create('損傷', 0, {
+          [DataElementAttribute.ROLE]: DataElementRole.FIELD,
+          [DataElementAttribute.FIELD_TYPE]: DataElementFieldType.CHECK,
+        })
+      );
+      group.appendChild(row);
+
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', group);
+      fixture.detectChanges();
+
+      const heading = (fixture.nativeElement as HTMLElement).querySelector('.elm-name-input')!.closest('.z-1')!;
+      expect(heading.classList.contains('z-100!')).toBe(false);
+
+      heading.querySelector<HTMLButtonElement>('.relative.shrink-0 > button')!.click();
+      fixture.detectChanges();
+
+      expect(heading.classList.contains('z-100!')).toBe(true);
+    });
+  });
+
+  describe('copies and templates', () => {
+    function buildSheet(): { detail: DataElement; section: DataElement; part: DataElement } {
+      const owner = new ObjectNode();
+      owner.initialize();
+      const root = DataElement.create('character', '');
+      owner.appendChild(root);
+      const detail = DataElement.create('detail', '');
+      const section = DataElement.create('パーツ', '', { [DataElementAttribute.ROLE]: DataElementRole.SECTION });
+      const part = DataElement.create('義眼', '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
+      part.appendChild(
+        DataElement.create('損傷', 0, {
+          [DataElementAttribute.ROLE]: DataElementRole.FIELD,
+          [DataElementAttribute.FIELD_TYPE]: DataElementFieldType.CHECK,
+        })
+      );
+      const shield = DataElement.create('盾', '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
+      root.appendChild(detail);
+      detail.appendChild(section);
+      section.appendChild(part);
+      section.appendChild(shield);
+      return { detail, section, part };
+    }
+
+    it('puts a copy of a group straight after it, under a name of its own', () => {
+      const { section, part } = buildSheet();
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', part);
+      fixture.detectChanges();
+
+      component.duplicateElement();
+
+      expect(section.children.map((child) => child.name)).toEqual(['義眼', '義眼 2', '盾']);
+      expect(section.children[1].children.map((child) => child.name)).toEqual(['損傷']);
+    });
+
+    it('offers a saved group where it fits and builds a fresh one there', () => {
+      const { section, part } = buildSheet();
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', part);
+      fixture.detectChanges();
+      component.saveAsTemplate();
+
+      fixture.componentRef.setInput('gameDataElement', section);
+      fixture.detectChanges();
+      expect(component.elementTemplates().map((template) => template.name)).toEqual(['義眼']);
+
+      component.insertTemplate(component.elementTemplates()[0]);
+
+      expect(section.children.map((child) => child.name)).toEqual(['義眼', '盾', '義眼 2']);
+      expect(section.children[2].identifier).not.toBe(part.identifier);
+    });
+
+    it('offers every template, and sets one that will not fit inside down just after the container', () => {
+      const { section } = buildSheet();
+      const table = DataElement.create('頭', '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
+      const row = DataElement.create('義眼', '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
+      row.appendChild(DataElement.create('損傷', 0, { [DataElementAttribute.ROLE]: DataElementRole.FIELD }));
+      table.appendChild(row);
+      section.insertBefore(table, section.children[1]);
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', table);
+      fixture.detectChanges();
+      component.saveAsTemplate();
+
+      expect(component.elementTemplates().map((template) => template.name)).toEqual(['頭']);
+      component.insertTemplate(component.elementTemplates()[0]);
+
+      expect(section.children.map((child) => child.name)).toEqual(['義眼', '頭', '頭 2', '盾']);
+    });
+
+    it('lets a section be kept as a template as well as a group', () => {
+      const { section } = buildSheet();
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', section);
+      fixture.detectChanges();
+
+      expect(component.canSaveAsTemplate()).toBe(true);
+      component.saveAsTemplate();
+
+      expect(component.elementTemplates().map((template) => template.name)).toEqual(['パーツ']);
+    });
+
+    it('offers neither saving nor adding templates inside a template itself', () => {
+      const { part } = buildSheet();
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', part);
+      fixture.detectChanges();
+      component.saveAsTemplate();
+      const template = component.elementTemplates()[0];
+
+      fixture.componentRef.setInput('gameDataElement', template);
+      fixture.detectChanges();
+
+      expect(component.canSaveAsTemplate()).toBe(false);
+      expect(component.elementTemplates()).toEqual([]);
+    });
+  });
+
+  describe('moving the structure from the menu held on its handle', () => {
+    function openMenuOn(element: DataElement, isEdit = true) {
+      vi.spyOn(TestBed.inject(PointerDeviceService), 'isAllowedToOpenContextMenu', 'get').mockReturnValue(true);
+      const open = vi.spyOn(TestBed.inject(ContextMenuService), 'open').mockImplementation(() => undefined);
+      fixture.componentRef.setInput('isEdit', isEdit);
+      fixture.componentRef.setInput('gameDataElement', element);
+      fixture.detectChanges();
+      component.onStructureHandleContextMenu(new MouseEvent('contextmenu', { cancelable: true }));
+      return open;
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('moves an item up past the one before it, for a screen that cannot drag it', () => {
+      const t = TestBed.inject(TRANSLATE_FN);
+      const parent = DataElement.create('parent', '');
+      for (const name of ['first', 'second', 'third']) parent.appendChild(DataElement.create(name, ''));
+
+      const open = openMenuOn(parent.children[2] as DataElement);
+      const actions = open.mock.calls[0][1] as ContextMenuAction[];
+      actions.find((action) => action.name === t('common.reorder.up'))?.action?.();
+
+      expect(parent.children.map((child) => child.name)).toEqual(['first', 'third', 'second']);
+    });
+
+    it('offers nothing while the sheet is not being edited', () => {
+      const parent = DataElement.create('parent', '');
+      for (const name of ['first', 'second']) parent.appendChild(DataElement.create(name, ''));
+
+      const open = openMenuOn(parent.children[1] as DataElement, false);
+
+      expect(open).not.toHaveBeenCalled();
+    });
   });
 
   describe('dragging the structure about', () => {
@@ -973,6 +1184,36 @@ describe('GameDataElementComponent', () => {
       expect(component.calcResult()).toBe('?');
     });
 
+    it('works itself out again when what it reads changes', () => {
+      const root = DataElement.create('detail', '');
+      const hp = DataElement.create('HP', '30');
+      const calc = DataElement.create('合計', '', { fieldType: DataElementFieldType.CALC, formula: 'HP + 1' });
+      root.appendChild(hp);
+      root.appendChild(calc);
+
+      fixture.componentRef.setInput('gameDataElement', calc);
+      fixture.detectChanges();
+      expect(component.calcResult()).toBe('31');
+
+      hp.value = '40';
+      TestBed.inject(ObjectChangeService).notifyChanged(hp.identifier);
+
+      expect(component.calcResult()).toBe('41');
+    });
+
+    it('reads a resource at what it is now rather than at the top of its bar', () => {
+      const root = DataElement.create('detail', '');
+      const hp = DataElement.create('HP', 20, { type: 'numberResource', currentValue: 6 });
+      const calc = DataElement.create('残り', '', { fieldType: DataElementFieldType.CALC, formula: 'HP' });
+      root.appendChild(hp);
+      root.appendChild(calc);
+
+      fixture.componentRef.setInput('gameDataElement', calc);
+      fixture.detectChanges();
+
+      expect(component.calcResult()).toBe('6');
+    });
+
     it('returns a question mark for a formula it cannot read', () => {
       const element = DataElement.create('合計', '', {
         fieldType: DataElementFieldType.CALC,
@@ -1069,6 +1310,92 @@ describe('GameDataElementComponent', () => {
       component.changeChk('elem-a');
       expect(component.isEditUrl('elem-a')).toBe(false);
       expect(component.isEditUrl('elem-b')).toBe(true);
+    });
+  });
+
+  describe('what a resource does when it moves', () => {
+    function resourceField(): DataElement {
+      return DataElement.create('HP', 200, {
+        type: DataElementType.NUMBER_RESOURCE,
+        currentValue: 200,
+        [DataElementAttribute.FIELD_TYPE]: DataElementFieldType.RESOURCE,
+      });
+    }
+
+    it('is asked about only for a resource', () => {
+      fixture.componentRef.setInput('gameDataElement', DataElement.create('メモ', 'テキスト'));
+      expect(component.canShowChangeFeedback()).toBe(false);
+
+      fixture.componentRef.setInput('gameDataElement', resourceField());
+      expect(component.canShowChangeFeedback()).toBe(true);
+    });
+
+    it('starts out neither seen nor heard', () => {
+      fixture.componentRef.setInput('gameDataElement', resourceField());
+
+      expect(component.playsEffectOnChange()).toBe(false);
+      expect(component.playsSoundOnChange()).toBe(false);
+    });
+
+    it('turns each one on and off again', () => {
+      const element = resourceField();
+      fixture.componentRef.setInput('gameDataElement', element);
+
+      component.toggleChangeEffect();
+      expect(component.playsEffectOnChange()).toBe(true);
+      component.toggleChangeEffect();
+      expect(component.playsEffectOnChange()).toBe(false);
+
+      component.toggleChangeSound();
+      expect(component.playsSoundOnChange()).toBe(true);
+      component.toggleChangeSound();
+      expect(component.playsSoundOnChange()).toBe(false);
+    });
+
+    it('picks the sound of flesh or of a machine', () => {
+      const element = resourceField();
+      fixture.componentRef.setInput('gameDataElement', element);
+
+      expect(component.soundSetOnChange()).toBe('flesh');
+
+      component.setSoundSetOnChange('mech');
+      expect(component.soundSetOnChange()).toBe('mech');
+      expect(element.getAttribute(DataElementAttribute.CHANGE_SOUND_SET)).toBe('mech');
+
+      component.setSoundSetOnChange('flesh');
+      expect(component.soundSetOnChange()).toBe('flesh');
+    });
+
+    it('offers the type only once the sound is on, showing what is stored', async () => {
+      const element = resourceField();
+      element.setAttribute(DataElementAttribute.CHANGE_SOUND_SET, 'mech');
+      fixture.componentRef.setInput('isEdit', true);
+      fixture.componentRef.setInput('gameDataElement', element);
+      fixture.detectChanges();
+      component.fieldOptionsOpen.set(true);
+      fixture.detectChanges();
+
+      const query = () => fixture.nativeElement.querySelector('select[name="data-change-sound-set"]');
+      expect(query()).toBeNull();
+
+      component.toggleChangeSound();
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      const select = query() as HTMLSelectElement;
+      expect(select).toBeTruthy();
+      expect(select.value).toBe('mech');
+    });
+
+    it('leaves anything that is not a resource alone', () => {
+      const note = DataElement.create('メモ', 'テキスト');
+      fixture.componentRef.setInput('gameDataElement', note);
+
+      component.toggleChangeSound();
+      component.setSoundSetOnChange('mech');
+
+      expect(note.getAttribute(DataElementAttribute.CHANGE_SOUND)).toBe('');
+      expect(note.getAttribute(DataElementAttribute.CHANGE_SOUND_SET)).toBe('');
     });
   });
 });

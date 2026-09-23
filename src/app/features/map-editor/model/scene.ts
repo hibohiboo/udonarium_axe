@@ -1,13 +1,19 @@
 import { GridType } from '@axe/domain/tabletop/game-table';
 import { isHexGrid } from '@axe/domain/tabletop/hex-geometry';
-import { computeHexMaskGeometry } from '@axe/features/tabletop/game-table-mask/game-table-mask-helpers';
+import { computeHexMaskGeometry } from '@axe/domain/tabletop/hex-mask-geometry';
+import {
+  DEFAULT_FUNCTION_ROLE,
+  DEFAULT_FUNCTION_SPEC,
+  FunctionSpec,
+  MapFunctionRole,
+} from '@axe/features/map-editor/model/function-layer';
 
 export const MAP_SCENE_VERSION = 1;
 
 export const DEFAULT_SCENE_BACKGROUND = 'transparent';
 export const DEFAULT_SCENE_GRID_COLOR = '#00000059';
 
-export type LayerKind = 'cell' | 'shape' | 'stamp' | 'freehand' | 'text' | 'image';
+export type LayerKind = 'cell' | 'shape' | 'stamp' | 'freehand' | 'text' | 'image' | 'function';
 
 export type FillStyle =
   { type: 'solid'; color: string } | { type: 'texture'; textureId: string; scale: number; rotation: number };
@@ -35,6 +41,8 @@ export interface BaseLayer {
   visible: boolean;
   locked: boolean;
   opacity: number;
+  /** The bundle this layer is filed under, where it is filed under one at all. */
+  group?: string;
 }
 
 export interface CellLayer extends BaseLayer {
@@ -100,6 +108,18 @@ export interface TextItem {
   bold: boolean;
   italic: boolean;
   align: TextAlign;
+  /** A card behind the words, which is what makes a note a note rather than a caption. */
+  background?: string;
+  /** A line drawn round every letter, so pale words hold up over a busy picture. */
+  outline?: TextOutline | null;
+  shadow?: ShapeShadow | null;
+  underline?: boolean;
+  strike?: boolean;
+}
+
+export interface TextOutline {
+  color: string;
+  width: number;
 }
 
 export interface TextLayer extends BaseLayer {
@@ -116,6 +136,9 @@ export interface ImageItem {
   h: number;
   rotation: number;
   opacity: number;
+  flipX?: boolean;
+  flipY?: boolean;
+  crop?: { x: number; y: number; w: number; h: number };
   clipToCells?: boolean;
 }
 
@@ -124,7 +147,20 @@ export interface ImageLayer extends BaseLayer {
   items: ImageItem[];
 }
 
-export type MapLayer = CellLayer | ShapeLayer | StampLayer | FreehandLayer | TextLayer | ImageLayer;
+/**
+ * Cells painted for what they do rather than how they look.
+ *
+ * It carries no fill: the look comes from the role, and the layer never reaches the picture
+ * the map is exported as.
+ */
+export interface FunctionLayer extends BaseLayer {
+  kind: 'function';
+  role: MapFunctionRole;
+  cells: Record<string, true>;
+  spec: FunctionSpec;
+}
+
+export type MapLayer = CellLayer | ShapeLayer | StampLayer | FreehandLayer | TextLayer | ImageLayer | FunctionLayer;
 
 export interface MapScene {
   version: number;
@@ -136,21 +172,36 @@ export interface MapScene {
   gridColor: string;
   gridVisible: boolean;
   layers: MapLayer[];
+  guides?: SceneGuideLine[];
 }
 
+/** A line laid across the scene to line things up against, kept with the scene it was laid on. */
+export interface SceneGuideLine {
+  id: string;
+  axis: 'x' | 'y';
+  at: number;
+}
+
+/** A fresh random identifier for a layer or for an item on one. */
 export function newId(): string {
   return crypto.randomUUID();
 }
 
+/** The key a cell is stored under in a layer's cell record, written `col,row`. */
 export function cellKey(col: number, row: number): string {
   return col + ',' + row;
 }
 
+/** Reads the column and row back out of a cell key. */
 export function parseCellKey(key: string): { col: number; row: number } {
   const comma = key.indexOf(',');
   return { col: Number(key.slice(0, comma)), row: Number(key.slice(comma + 1)) };
 }
 
+/**
+ * A blank scene with no layers, a transparent background and the grid showing; 20 by 15 square
+ * cells of 64 px unless told otherwise.
+ */
 export function createScene(cols = 20, rows = 15, cellPx = 64, gridType: GridType = GridType.SQUARE): MapScene {
   return {
     version: MAP_SCENE_VERSION,
@@ -165,11 +216,18 @@ export function createScene(cols = 20, rows = 15, cellPx = 64, gridType: GridTyp
   };
 }
 
+/**
+ * A new empty layer of the given kind, visible, unlocked and fully opaque, with a fresh id.
+ *
+ * A function layer starts with the default role and a copy of the default spec.
+ */
 export function createLayer(kind: LayerKind, name: string): MapLayer {
   const base: BaseLayer = { id: newId(), kind, name, visible: true, locked: false, opacity: 1 };
   switch (kind) {
     case 'cell':
       return { ...base, kind: 'cell', cells: {} };
+    case 'function':
+      return { ...base, kind: 'function', role: DEFAULT_FUNCTION_ROLE, cells: {}, spec: { ...DEFAULT_FUNCTION_SPEC } };
     case 'shape':
       return { ...base, kind: 'shape', items: [] };
     case 'stamp':
@@ -183,10 +241,15 @@ export function createLayer(kind: LayerKind, name: string): MapLayer {
   }
 }
 
+/** A deep copy of a scene sharing nothing with the original, as the undo history keeps. */
 export function cloneScene(scene: MapScene): MapScene {
   return structuredClone(scene);
 }
 
+/**
+ * The scene's width in pixels. A hex grid is measured by how its hexes lie, which is not simply
+ * columns times the cell size.
+ */
 export function sceneWidthPx(scene: MapScene): number {
   if (isHexGrid(scene.gridType)) {
     const geo = computeHexMaskGeometry(scene.cols, scene.rows, scene.cellPx, scene.gridType);
@@ -195,6 +258,10 @@ export function sceneWidthPx(scene: MapScene): number {
   return scene.cols * scene.cellPx;
 }
 
+/**
+ * The scene's height in pixels. A hex grid is measured by how its hexes lie, which is not simply
+ * rows times the cell size.
+ */
 export function sceneHeightPx(scene: MapScene): number {
   if (isHexGrid(scene.gridType)) {
     const geo = computeHexMaskGeometry(scene.cols, scene.rows, scene.cellPx, scene.gridType);

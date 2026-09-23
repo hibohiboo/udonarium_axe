@@ -9,7 +9,7 @@ import { emitSelectFile } from '@axe/core/event/domain-events';
 import { FileArchiver } from '@axe/core/storage/file-archiver';
 import { ImageFile } from '@axe/core/storage/image-file';
 import { ImageStorage } from '@axe/core/storage/image-storage';
-import { ImageTag } from '@axe/domain/media/image-tag';
+import { canBrowseImage, ImageTag, SYSTEM_RESERVED_TAG } from '@axe/domain/media/image-tag';
 import { SafePipe } from '@axe/ui/pipes/safe.pipe';
 import { TranslocoModule } from '@jsverse/transloco';
 
@@ -31,6 +31,7 @@ export class FileStorageComponent {
   private readonly rolePermission = inject(RolePermissionService);
   private readonly t = inject(TRANSLATE_FN);
 
+  /** The label shown for a tag in the tag filter, with the all and untagged entries translated. */
   displayTagName(tag: string): string {
     if (tag === ALL_TAG) return this.t('feature.file.fileStorage.all');
     if (!tag) return this.t('feature.file.fileStorage.unset');
@@ -39,17 +40,24 @@ export class FileStorageComponent {
 
   protected checkedFiles = new Set<string>();
 
+  /** Only the master may keep a picture back, or see one that is being kept. */
+  get canKeepSecret(): boolean {
+    return this.rolePermission.canSeeHidden;
+  }
+
+  /** The master's own view of what is being kept. Everyone else never sees them at all. */
+  readonly showSecret = signal(true);
+
+  private mayShow(imageFile: ImageFile): boolean {
+    return canBrowseImage(ImageTag.get(imageFile.context.identifier) ?? null, this.canKeepSecret, this.showSecret());
+  }
+
+  /**
+   * Every stored picture this seat may see whatever its tag, following the master's switch for
+   * showing kept-back pictures.
+   */
   getAllImage(): ImageFile[] {
-    const imageFileList: ImageFile[] = [];
-
-    for (const imageFile of this.fileStorageService.images) {
-      const identifier = imageFile.context.identifier;
-      let tag: string = '';
-      if (ImageTag.get(identifier)) tag = ImageTag.get(identifier).tag;
-
-      if (tag != 'システム予約') imageFileList.push(imageFile);
-    }
-    return imageFileList;
+    return this.fileStorageService.images.filter((imageFile) => this.mayShow(imageFile));
   }
 
   readonly images = computed(() => {
@@ -64,7 +72,7 @@ export class FileStorageComponent {
       if (imageTag) {
         this.objectChange.versionOf(imageTag.identifier)();
         const tag: string = imageTag.tag;
-        if (tag == this.selectTag()) {
+        if (tag == this.selectTag() && this.mayShow(imageFile)) {
           imageFileList.push(imageFile);
         }
       } else if (this.selectTag() == '') {
@@ -75,9 +83,15 @@ export class FileStorageComponent {
   });
 
   selectedFile: ImageFile | null = null;
+  /** Whether a picture has been selected. */
   get isSelected(): boolean {
     return this.selectedFile !== null;
   }
+  /**
+   * The tag record of the selected picture, or null with nothing selected.
+   *
+   * A picture without one gets a new tag record on the spot, which is shared with the room.
+   */
   get selectedImageTag(): ImageTag | null {
     if (!this.isSelected || this.selectedFile === null) return null;
     const imageTag = ImageTag.get(this.selectedFile.identifier);
@@ -93,7 +107,7 @@ export class FileStorageComponent {
       const imageTag = ImageTag.get(identifier);
       if (imageTag) {
         this.objectChange.versionOf(imageTag.identifier)();
-        if (imageTag.tag && imageTag.tag != 'システム予約') tags.push(imageTag.tag);
+        if (imageTag.tag && imageTag.tag != SYSTEM_RESERVED_TAG) tags.push(imageTag.tag);
       }
     }
 
@@ -105,14 +119,21 @@ export class FileStorageComponent {
 
   fileStorageService = this.imageStorage;
 
+  /** Keeps the tag name typed into the new-tag field. */
   onInputNewTag(event: Event): void {
     this.newTagName.set((event.target as HTMLInputElement).value);
   }
 
+  /**
+   * Files every ticked picture in the current list under the typed tag.
+   *
+   * Typing the untagged label clears their tag instead. The names reserved for all pictures and for
+   * the tool's own pictures are refused. Tag records are shared, so the change reaches every peer.
+   */
   changeTag() {
     const candidate = this.newTagName();
     if (candidate === ALL_TAG) return;
-    if (candidate === 'システム予約') return;
+    if (candidate === SYSTEM_RESERVED_TAG) return;
     if (candidate === this.t('feature.file.fileStorage.all')) return;
 
     const changeableImages = this.images();
@@ -130,15 +151,41 @@ export class FileStorageComponent {
     }
   }
 
+  /** Whether the picture is being kept back by the master. */
+  isSecret(file: ImageFile): boolean {
+    return ImageTag.isSecret(file.context.identifier);
+  }
+
+  /** Keeps back, or gives up, every picture ticked. Only the master may. */
+  setCheckedSecret(secret: boolean): void {
+    if (!this.canKeepSecret) return;
+
+    for (const image of this.images()) {
+      const identifier = image.context.identifier;
+      if (!this.checkedFiles.has(identifier)) continue;
+      const tag = ImageTag.get(identifier) ?? ImageTag.create(identifier);
+      // What the tool brought with it is nobody's to keep or to give up.
+      if (tag.tag === SYSTEM_RESERVED_TAG) continue;
+      tag.isSecret = secret;
+    }
+  }
+
   readonly selectTag = signal('');
   readonly newTagName = signal<string>('');
 
+  /** Runs when the tag filter changes; it does nothing. */
   resetBtn() {}
 
   constructor() {
     queueMicrotask(() => (this.panelService.title = this.t('common.panel.fileStorage')));
   }
 
+  /**
+   * Loads the files chosen in the upload dialog into storage, then clears the input so the same
+   * file can be chosen again.
+   *
+   * A seat that may not edit the table loads nothing.
+   */
   handleFileSelect(event: Event) {
     const input = event.target as HTMLInputElement;
     if (!this.rolePermission.canEditTabletop) {
@@ -150,12 +197,14 @@ export class FileStorageComponent {
     input.value = '';
   }
 
+  /** Selects a picture and announces it as the chosen file to anything waiting for one. */
   onSelectedFile(file: ImageFile) {
     emitSelectFile({ fileIdentifier: file.identifier });
 
     this.selectedFile = file;
   }
 
+  /** Ticks or unticks a picture for the bulk tag and keep-back actions. */
   imgBlockClick(identifier: string) {
     if (this.checkedFiles.has(identifier)) {
       this.checkedFiles.delete(identifier);

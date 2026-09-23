@@ -1,3 +1,4 @@
+import { NgTemplateOutlet } from '@angular/common';
 import {
   afterNextRender,
   ChangeDetectionStrategy,
@@ -7,6 +8,7 @@ import {
   effect,
   ElementRef,
   inject,
+  Injector,
   signal,
   viewChild,
 } from '@angular/core';
@@ -14,32 +16,47 @@ import { FormsModule } from '@angular/forms';
 import { ActiveChatTabService } from '@axe/application/chat/active-chat-tab.service';
 import { ChatMessageService } from '@axe/application/chat/chat-message.service';
 import { ChatPreferencesService } from '@axe/application/chat/chat-preferences.service';
+import { ChatSpeakerService } from '@axe/application/chat/chat-speaker.service';
+import { ChatTickerSelectionService } from '@axe/application/chat/chat-ticker-selection.service';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { TabletopService } from '@axe/application/tabletop/tabletop.service';
+import { ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
 import { sheetPanelBox } from '@axe/application/ui/sheet-panel';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { ChatMessage, ChatMessageTargetContext } from '@axe/domain/chat/chat-message';
+import { ChatOutgoing } from '@axe/domain/chat/chat-outgoing';
+import { evaluateCharacterReferences, textTargetsCharacter } from '@axe/domain/chat/chat-palette';
 import { ChatTab } from '@axe/domain/chat/chat-tab';
 import { ChatTabList } from '@axe/domain/chat/chat-tab-list';
 import { canRoleSpeakTab, canRoleViewTab } from '@axe/domain/chat/chat-tab-permission';
 import { DiceBot } from '@axe/domain/dice/dice-bot';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { ChatInputComponent } from '@axe/features/chat/chat-input/chat-input.component';
+import { editsTextInPlace } from '@axe/features/chat/chat-input/chat-input-helpers';
 import { ChatMessageSettingComponent } from '@axe/features/chat/chat-message-setting/chat-message-setting.component';
 import { ChatPortraitComponent } from '@axe/features/chat/chat-portrait/chat-portrait.component';
+import { ChatStreamPanelService } from '@axe/features/chat/chat-stream/chat-stream-panel.service';
 import { ChatTabComponent } from '@axe/features/chat/chat-tab/chat-tab.component';
 import { ChatTabSettingComponent } from '@axe/features/chat/chat-tab-setting/chat-tab-setting.component';
-import { BadgeComponent } from '@axe/ui/components/badge/badge.component';
+import { ChatTabStripComponent } from '@axe/features/chat/chat-tab-strip/chat-tab-strip.component';
+import { RoomPanelService } from '@axe/features/panels/room-panel.service';
 import { SafePipe } from '@axe/ui/pipes/safe.pipe';
 import { TranslocoModule } from '@jsverse/transloco';
-import GameSystemClass from 'bcdice/lib/game_system';
+
+/**
+ * The strip at the foot of the log that who-is-typing hangs over.
+ *
+ * It is held open whether or not anybody is typing, since the whole point is that the log
+ * does not move when somebody starts.
+ */
+const WRITING_STRIP_PX = 32;
 
 const NEAR_BOTTOM_THRESHOLD_PX = 350;
 const AT_BOTTOM_THRESHOLD_PX = 8;
-
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'chat-window',
@@ -47,26 +64,53 @@ const AT_BOTTOM_THRESHOLD_PX = 8;
   imports: [
     ChatTabComponent,
     FormsModule,
+    NgTemplateOutlet,
     ChatPortraitComponent,
-    BadgeComponent,
     ChatInputComponent,
     SafePipe,
     TranslocoModule,
+    ChatTabStripComponent,
   ],
+  host: {
+    class: 'block h-full min-h-0 min-w-0',
+    tabindex: '-1',
+    '(keydown.control.arrowleft)': 'switchTabByKey($event, -1)',
+    '(keydown.control.arrowright)': 'switchTabByKey($event, 1)',
+  },
 })
 export class ChatWindowComponent {
   chatMessageService = inject(ChatMessageService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly objectChange = inject(ObjectChangeService);
   private readonly panelService = inject(PanelService);
+  private readonly roomPanels = inject(RoomPanelService);
   private readonly pointerDeviceService = inject(PointerDeviceService);
+  private readonly contextMenuService = inject(ContextMenuService);
+  private readonly chatStreamPanel = inject(ChatStreamPanelService);
   private readonly objectStore = inject(ObjectStore);
   private readonly chatPrefs = inject(ChatPreferencesService);
   private readonly activeChatTab = inject(ActiveChatTabService);
+  private readonly tabletopService = inject(TabletopService);
+  private readonly chatTickerSelection = inject(ChatTickerSelectionService);
+  private readonly chatSpeaker = inject(ChatSpeakerService);
   private readonly t = inject(TRANSLATE_FN);
+  private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
 
-  sendFrom: string = 'Guest';
+  private readonly _sendFrom = signal('Guest');
+  get sendFrom(): string {
+    return this._sendFrom();
+  }
+  /** Choosing who to speak as tells the rest of the room; a window opening does not. */
+  set sendFrom(sendFrom: string) {
+    this._sendFrom.set(sendFrom);
+    this.chatSpeaker.set(sendFrom);
+  }
 
+  /**
+   * The dice bot system chat lines are rolled with, shared through the chat message service;
+   * 'DiceBot' when none is chosen.
+   */
   get gameType(): string {
     return !this.chatMessageService.gameType ? 'DiceBot' : this.chatMessageService.gameType;
   }
@@ -75,6 +119,12 @@ export class ChatWindowComponent {
   }
 
   private readonly _chatTabidentifier = signal('');
+  /**
+   * The identifier of the chat tab this window shows.
+   *
+   * Changing it tells the active-tab service, retitles the panel and, when the tab really changed,
+   * scrolls the log to the bottom.
+   */
   get chatTabidentifier(): string {
     return this._chatTabidentifier();
   }
@@ -83,50 +133,30 @@ export class ChatWindowComponent {
     this._chatTabidentifier.set(chatTabidentifier);
     this.activeChatTab.set(chatTabidentifier);
     this.updatePanelTitle();
-    if (hasChanged) {
-      this.scrollToBottom(true);
-      queueMicrotask(() => this.scrollActiveTabIntoView());
-    }
+    if (hasChanged) this.scrollToBottom(true);
   }
 
-  private readonly tabPillsContainer = viewChild<ElementRef<HTMLElement>>('tabPillsContainer');
+  private readonly logScroll = viewChild.required<ElementRef<HTMLDivElement>>('logScroll');
   readonly chatTabRef = viewChild(ChatTabComponent);
-  readonly canScrollLeft = signal(false);
-  readonly canScrollRight = signal(false);
 
-  updateTabScrollState(): void {
-    const el = this.tabPillsContainer()?.nativeElement;
-    if (!el) return;
-    this.canScrollLeft.set(el.scrollLeft > 0);
-    this.canScrollRight.set(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  /**
+   * Bound to the window rather than to the input: a tab nobody may speak in renders no textarea,
+   * so a shortcut living on that textarea would leave no way back out of such a tab by keyboard.
+   * Focus follows to the window when the input goes away.
+   */
+  switchTabByKey(event: Event, direction: number): void {
+    if (editsTextInPlace(event.target)) return;
+    event.preventDefault();
+    this.chatTabSwitchRelative(direction);
+    if (!this.canSpeakCurrentTab()) this.hostElement.nativeElement.focus();
   }
 
-  onTabPillsScroll(): void {
-    this.updateTabScrollState();
-  }
-
-  scrollTabsLeft(): void {
-    const el = this.tabPillsContainer()?.nativeElement;
-    if (el) el.scrollBy({ left: -120, behavior: 'smooth' });
-  }
-
-  scrollTabsRight(): void {
-    const el = this.tabPillsContainer()?.nativeElement;
-    if (el) el.scrollBy({ left: 120, behavior: 'smooth' });
-  }
-
-  private scrollActiveTabIntoView(): void {
-    const el = this.tabPillsContainer()?.nativeElement;
-    if (!el) return;
-    const activeInput = el.querySelector<HTMLInputElement>('input[type="radio"]:checked');
-    if (activeInput?.parentElement) {
-      activeInput.parentElement.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-    }
-    this.updateTabScrollState();
-  }
-
+  /**
+   * Moves to the next or previous tab the reader may view, wrapping around at either end; does
+   * nothing when the current tab is not among them.
+   */
   chatTabSwitchRelative(direction: number) {
-    const chatTabs = this.chatMessageService.chatTabs;
+    const chatTabs = this.visibleChatTabs();
     const index = chatTabs.findIndex((elm) => elm.identifier == this.chatTabidentifier);
     if (index < 0) {
       return;
@@ -159,7 +189,7 @@ export class ChatWindowComponent {
 
   readonly visibleChatTabs = computed(() => {
     const tabs = this.chatTabsVersion();
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     const role = PeerCursor.myRole;
     return tabs.filter((tab) => canRoleViewTab(tab, role));
   });
@@ -167,7 +197,7 @@ export class ChatWindowComponent {
   readonly canSpeakCurrentTab = computed(() => {
     const tab = this.chatTab();
     if (!tab) return false;
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     this.objectChange.versionOf(tab.identifier)();
     return canRoleSpeakTab(tab, PeerCursor.myRole);
   });
@@ -175,12 +205,15 @@ export class ChatWindowComponent {
   private isAutoScroll = true;
   readonly hasNewMessage = signal(false);
   readonly isNearBottom = signal(true);
+  readonly writingStripPx = WRITING_STRIP_PX;
   readonly newMessageCount = signal(0);
   private scrollToBottomTimer: ReturnType<typeof setTimeout> | null = null;
   private scrollListener: (() => void) | null = null;
 
   constructor() {
-    this.sendFrom = PeerCursor.myCursor.identifier;
+    // Opening a window is nobody's choice of speaker: a second one would otherwise put back
+    // the reader's own name over the character the first one is speaking as.
+    this._sendFrom.set(PeerCursor.myCursor.identifier);
     this.chatTabidentifier =
       0 < this.chatMessageService.chatTabs.length ? this.chatMessageService.chatTabs[0].identifier : '';
     this.objectChange.messageAdded$.subscribe((event) => {
@@ -238,29 +271,42 @@ export class ChatWindowComponent {
       }
     });
     effect(() => {
-      this.chatTabsVersion();
-      queueMicrotask(() => this.updateTabScrollState());
-    });
-    effect(() => {
       const visible = this.visibleChatTabs();
       const current = this._chatTabidentifier();
       if (current && !visible.some((tab) => tab.identifier === current)) {
         this.chatTabidentifier = visible.length > 0 ? visible[0].identifier : '';
       }
     });
+    afterNextRender({
+      write: () => {
+        this.panelService.claimScrollablePanel(this.logScroll().nativeElement);
+      },
+    });
     afterNextRender(() => {
       queueMicrotask(() => this.scrollToBottom(true));
-      queueMicrotask(() => this.updateTabScrollState());
       if (this.panelService.scrollablePanel) {
         this.scrollListener = () => this.onScrollPositionChange();
         this.panelService.scrollablePanel.addEventListener('scroll', this.scrollListener, { passive: true });
       }
     });
+    this.panelService.activated$.subscribe(() => this.onPanelShown(), this.destroyRef);
     this.destroyRef.onDestroy(() => {
       if (this.scrollListener && this.panelService.scrollablePanel) {
         this.panelService.scrollablePanel.removeEventListener('scroll', this.scrollListener);
       }
     });
+  }
+
+  /**
+   * Measures the log again once the window is being looked at.
+   *
+   * A window drawn behind another in the same frame has no height, so how far it was from the
+   * bottom, and how many lines it had room to draw, both read as nothing while it waited.
+   */
+  private onPanelShown(): void {
+    if (!this.panelService.scrollablePanel) return;
+    if (this.isNearBottom()) this.scrollToBottom(true);
+    else this.refreshNearBottom();
   }
 
   private distanceFromBottom(): number | null {
@@ -285,17 +331,29 @@ export class ChatWindowComponent {
     }
   }
 
+  /**
+   * Follows the log down when the chat tab adds a message, and rechecks how near the bottom it sits
+   * when auto-follow is off.
+   */
   onAddMessage() {
     this.scrollToBottom();
     if (!this.chatPrefs.autoFollowScroll()) this.refreshNearBottom();
   }
 
+  /** Jumps the log to the newest message and clears the new-message notice, from its button. */
   onClickScrollToBottom() {
     this.hasNewMessage.set(false);
     this.newMessageCount.set(0);
     this.scrollToBottom(true);
   }
 
+  /**
+   * Scrolls the log to the newest message and marks the tab as read.
+   *
+   * Without force it acts only while the log is following new messages, and moves the scroll only
+   * when auto-follow is on in the chat preferences. The scroll waits a tick, and calls within that
+   * tick are merged into one.
+   */
   scrollToBottom(isForce: boolean = false) {
     if (isForce) this.isAutoScroll = true;
     if (!this.isAutoScroll) return;
@@ -320,12 +378,20 @@ export class ChatWindowComponent {
     }, 0);
   }
 
+  /**
+   * Decides whether the log keeps following new messages, which it does only while scrolled to the
+   * bottom.
+   */
   checkAutoScroll() {
     const distance = this.distanceFromBottom();
     if (distance == null) return;
     this.isAutoScroll = distance <= AT_BOTTOM_THRESHOLD_PX;
   }
 
+  /**
+   * Titles the panel after the current tab and hands the tab to the panel; falls back to the plain
+   * chat window title without one.
+   */
   updatePanelTitle() {
     const tab = this.chatTab();
     if (tab) {
@@ -337,10 +403,15 @@ export class ChatWindowComponent {
     }
   }
 
+  /**
+   * Retitles the panel after a tab is selected; the title is read from the current tab, not from
+   * the identifier.
+   */
   onSelectedTab(_identifier: string) {
     this.updatePanelTitle();
   }
 
+  /** Opens the chat tab settings panel near the pointer, with the current tab selected. */
   showTabSetting() {
     const coordinate = this.pointerDeviceService.pointers[0];
     const option: PanelOption = {
@@ -351,24 +422,13 @@ export class ChatWindowComponent {
     component.selectedTab.set(this.chatTab());
   }
 
+  /** Opens the dice table settings panel near the pointer, loading it on first use. */
   showDiceTableSetting() {
     const coordinate = this.pointerDeviceService.pointers[0];
-    const option: PanelOption = {
-      title: this.t('feature.chat.window.diceTableSetting'),
-      left: coordinate.x + 50,
-      top: coordinate.y - 450,
-      width: 650,
-      height: 400,
-    };
-    this.panelService.openLazy(
-      () =>
-        import('@axe/features/dice/dice-table-setting/dice-table-setting.component').then(
-          (m) => m.DiceTableSettingComponent
-        ),
-      option
-    );
+    this.roomPanels.open('diceTableSetting', { left: coordinate.x + 50, top: coordinate.y - 450 });
   }
 
+  /** Opens the chat message settings panel near the pointer for the current tab. */
   showChatSetting() {
     const coordinate = this.pointerDeviceService.pointers[0];
     const option: PanelOption = {
@@ -382,6 +442,7 @@ export class ChatWindowComponent {
     component.chatTabidentifier = this.chatTabidentifier;
   }
 
+  /** Opens the vote menu near the pointer for the current tab, loading it on first use. */
   showVoteMenu() {
     const coordinate = this.pointerDeviceService.pointers[0];
     const option: PanelOption = {
@@ -398,6 +459,7 @@ export class ChatWindowComponent {
     );
   }
 
+  /** Opens the alarm menu near the pointer, loading it on first use. */
   showAlarmMenu() {
     const coordinate = this.pointerDeviceService.pointers[0];
     const option: PanelOption = {
@@ -413,21 +475,10 @@ export class ChatWindowComponent {
     );
   }
 
-  checkTargetCharacter(text: string): boolean {
-    let istarget = false;
-    if (text.match(/^[sSｓＳ]?[tTｔＴ][:：]([^:：]+)/g)) {
-      istarget = true;
-    }
-    if (text.match(/\s[sSｓＳ]?[tTｔＴ][:：]([^:：]+)/g)) {
-      istarget = true;
-    }
-    if (text.match(/^[tTｔＴ][&＆]([^&＆]+)/g)) {
-      istarget = true;
-    }
-    if (text.match(/\s[tTｔＴ][&＆]([^&＆]+)/g)) {
-      istarget = true;
-    }
-    return istarget;
+  /** Who the line is spoken as. Speaking as yourself rather than as a piece leaves nothing to read. */
+  private speakingCharacterOf(sendFrom: string): GameCharacter | null {
+    const object = this.objectStore.get(sendFrom);
+    return object instanceof GameCharacter ? object : null;
   }
 
   private targeted(gameCharacter: GameCharacter): boolean {
@@ -442,16 +493,16 @@ export class ChatWindowComponent {
     return objects;
   }
 
-  sendChat(value: {
-    text: string;
-    gameSystem: GameSystemClass;
-    sendFrom: string;
-    sendTo: string;
-    portraitIndex: number;
-    messColor: string;
-    replyTo: string;
-    quoteOf: string;
-  }) {
+  /**
+   * Sends a line from the chat input to the current tab.
+   *
+   * Character references in the text are filled in from the speaker. A line that targets characters
+   * is sent once for each targeted piece on the table, filled in against that piece and tagged with
+   * its name, with the parts that change the speaker's own resources or buffs taken out after the
+   * first copy so they apply once; with nothing targeted, the line says so. Nothing is sent when
+   * the reader may not speak in the tab. A line marked for the ticker is also shown there.
+   */
+  sendChat(value: ChatOutgoing) {
     const tab = this.chatTab();
     if (tab && !canRoleSpeakTab(tab, PeerCursor.myRole)) return;
     if (tab) {
@@ -459,7 +510,21 @@ export class ChatWindowComponent {
       let objects: GameCharacter[];
       const messageTargetContext: ChatMessageTargetContext[] = [];
 
-      if (this.checkTargetCharacter(value.text)) {
+      const speaker = this.speakingCharacterOf(value.sendFrom);
+      const attachmentImageIdentifiers: string[] = [];
+      const appendAttachmentImages = (identifiers: string[]) => {
+        for (const identifier of identifiers) {
+          if (!attachmentImageIdentifiers.includes(identifier)) attachmentImageIdentifiers.push(identifier);
+        }
+      };
+      const fillIn = (text: string, target?: GameCharacter): string => {
+        if (!speaker && !target) return text;
+        const evaluated = evaluateCharacterReferences(text, speaker, target);
+        appendAttachmentImages(evaluated.attachmentImageIdentifiers);
+        return evaluated.text;
+      };
+
+      if (textTargetsCharacter(value.text)) {
         objects = this.targetedGameCharacterList();
         let first = true;
         if (objects.length == 0) {
@@ -475,7 +540,8 @@ export class ChatWindowComponent {
             str2 = DiceBot.deleteMyselfResourceBuff(str);
           }
 
-          outtext += str2;
+          const filled = fillIn(str2, object);
+          outtext += filled;
           outtext += ' [' + object.name + ']';
           first = false;
 
@@ -483,21 +549,21 @@ export class ChatWindowComponent {
             text: '',
             object: null,
           };
-          targetContext.text = str2;
+          targetContext.text = filled;
           targetContext.object = object;
           messageTargetContext.push(targetContext);
         }
       } else {
-        outtext = value.text;
+        outtext = fillIn(value.text);
         const targetContext: ChatMessageTargetContext = {
           text: '',
           object: null,
         };
-        targetContext.text = value.text;
+        targetContext.text = outtext;
         targetContext.object = null;
         messageTargetContext.push(targetContext);
       }
-      this.chatMessageService.sendMessage(
+      const sent = this.chatMessageService.sendMessage(
         tab,
         outtext,
         value.gameSystem,
@@ -506,14 +572,12 @@ export class ChatWindowComponent {
         value.portraitIndex,
         value.messColor,
         messageTargetContext,
-        undefined,
+        attachmentImageIdentifiers,
         value.replyTo,
-        value.quoteOf
+        value.quoteOf,
+        { light: value.messBubbleLight ?? '', dark: value.messBubbleDark ?? '' }
       );
+      if (value.toTicker) this.chatTickerSelection.showMessage(sent.identifier);
     }
-  }
-
-  trackByChatTab(index: number, chatTab: ChatTab) {
-    return chatTab.identifier;
   }
 }

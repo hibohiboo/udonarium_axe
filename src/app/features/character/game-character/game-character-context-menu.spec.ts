@@ -1,8 +1,23 @@
+import { TestBed } from '@angular/core/testing';
 import { GameObjectInventoryService } from '@axe/application/inventory/game-object-inventory.service';
 import { ContextMenuType } from '@axe/application/ui/context-menu.service';
+import { ObjectNode } from '@axe/core/sync/object-node';
 import { GameCharacter } from '@axe/domain/character/game-character';
+import {
+  DataElement,
+  DataElementAttribute,
+  DataElementFieldType,
+  DataElementRole,
+} from '@axe/domain/data/data-element';
+import { saveElementTemplate } from '@axe/domain/data/data-element-templates';
+import { encodeRangeShapeField } from '@axe/domain/data/range-shape-field';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
-import { buildGameCharacterContextMenu } from '@axe/features/character/game-character/game-character-context-menu';
+import {
+  buildGameCharacterContextMenu,
+  buildGameCharacterContextMenuModel,
+  collectRegisteredEffects,
+  collectRegisteredRangeShapes,
+} from '@axe/features/character/game-character/game-character-context-menu';
 import { createSyncTranslate } from '@axe/testing/transloco-testing';
 
 const t = createSyncTranslate('ja');
@@ -12,11 +27,13 @@ interface MutableChar {
   isAltitudeIndicate: boolean;
   isDropShadow: boolean;
   hideInventory: boolean;
+  noTurn: boolean;
   nonTalkFlag: boolean;
   hideName: boolean;
   hideBuff: boolean;
   isNpc: boolean;
   isLock: boolean;
+  targeted: boolean;
   setLocation: ReturnType<typeof vi.fn>;
   clone: ReturnType<typeof vi.fn>;
 }
@@ -31,11 +48,13 @@ function makeChar(overrides: Partial<MutableChar> = {}): MutableChar {
     isAltitudeIndicate: false,
     isDropShadow: false,
     hideInventory: false,
+    noTurn: false,
     nonTalkFlag: false,
     hideName: false,
     hideBuff: false,
     isNpc: false,
     isLock: false,
+    targeted: false,
     setLocation: vi.fn(),
     clone: vi.fn(() => ({ location: { x: 0, y: 0 }, update: vi.fn() })),
     ...overrides,
@@ -56,10 +75,127 @@ describe('buildGameCharacterContextMenu()', () => {
     PeerCursor.myCursor = null!;
   });
 
+  it('offers to work a move out where the piece has ground to walk', () => {
+    const onPlanMove = vi.fn();
+    const menu = buildGameCharacterContextMenu(
+      makeChar() as unknown as GameCharacter,
+      50,
+      makeService(),
+      { ...callbacks(), onPlanMove },
+      t
+    );
+
+    const planning = menu.find((action) => action.name === '移動');
+    expect(planning).toBeDefined();
+    planning!.action!();
+    expect(onPlanMove).toHaveBeenCalled();
+  });
+
+  it('puts working a move out above everything else the piece is asked', () => {
+    const menu = buildGameCharacterContextMenu(
+      makeChar() as unknown as GameCharacter,
+      50,
+      makeService(),
+      { ...callbacks(), onPlanMove: vi.fn() },
+      t
+    );
+
+    const named = menu.filter((action) => action.name).map((action) => action.name);
+
+    expect(named[0]).toBe('移動');
+    expect(named.indexOf('移動')).toBeLessThan(named.indexOf('詳細を表示'));
+  });
+
+  it('offers nothing of the sort to a piece with no reach', () => {
+    const menu = buildGameCharacterContextMenu(
+      makeChar() as unknown as GameCharacter,
+      50,
+      makeService(),
+      callbacks(),
+      t
+    );
+
+    expect(menu.map((action) => action.name)).not.toContain('移動');
+  });
+
+  describe('aiming without a keyboard', () => {
+    it('offers to aim at the piece, ticked by whether it already is', () => {
+      const onToggleTarget = vi.fn();
+      const aimed = buildGameCharacterContextMenu(
+        makeChar({ targeted: true }) as unknown as GameCharacter,
+        50,
+        makeService(),
+        { ...callbacks(), onToggleTarget },
+        t
+      );
+      expect(names(aimed)).toContain('✔ ターゲット');
+
+      const plain = buildGameCharacterContextMenu(
+        makeChar() as unknown as GameCharacter,
+        50,
+        makeService(),
+        { ...callbacks(), onToggleTarget },
+        t
+      );
+      expect(names(plain)).toContain('ターゲット');
+      plain.find((action) => action.name === 'ターゲット')!.action!();
+      expect(onToggleTarget).toHaveBeenCalled();
+    });
+
+    it('offers to stop aiming at everything only while something is aimed at', () => {
+      const onClearTargets = vi.fn();
+      const withAim = buildGameCharacterContextMenu(
+        makeChar() as unknown as GameCharacter,
+        50,
+        makeService(),
+        { ...callbacks(), onClearTargets },
+        t
+      );
+      expect(names(withAim)).toContain('ターゲットを全部外す');
+
+      const without = buildGameCharacterContextMenu(
+        makeChar() as unknown as GameCharacter,
+        50,
+        makeService(),
+        callbacks(),
+        t
+      );
+      expect(names(without)).not.toContain('ターゲットを全部外す');
+    });
+  });
+
   it('leads with the sheet, which opens the group at the top', () => {
     const char = makeChar();
     const menu = buildGameCharacterContextMenu(char as unknown as GameCharacter, 50, makeService(), callbacks(), t);
     expect(menu[0].name).toBe('詳細を表示');
+  });
+
+  it('groups the existing actions for the radial menu without dropping surface actions', () => {
+    const surfaceAction = { name: 'Move to reverse side', action: vi.fn() };
+    const overlapAction = { name: 'Overlapping piece', action: vi.fn() };
+    const model = buildGameCharacterContextMenuModel(
+      makeChar() as unknown as GameCharacter,
+      50,
+      makeService(),
+      callbacks(),
+      t,
+      [overlapAction],
+      'icon',
+      [surfaceAction]
+    );
+
+    expect(model.radialGroups.map((group) => group.name)).toEqual([
+      '基本情報',
+      'チャット',
+      'バフ・演出',
+      '表示',
+      '移動',
+      '公開・所有',
+      'コマ操作',
+    ]);
+    expect(model.radialGroups.find((group) => group.name === '移動')!.actions).toContain(surfaceAction);
+    expect(model.radialGroups.find((group) => group.name === 'コマ操作')!.actions).toContain(overlapAction);
+    expect(model.actions).toContain(surfaceAction);
   });
 
   it('puts the altitude submenu into the display group', () => {
@@ -101,6 +237,26 @@ describe('buildGameCharacterContextMenu()', () => {
       t
     );
     expect(names(hiddenMenu)).toContain('☑ インベントリ非表示');
+  });
+
+  it('ticks the item by whether it takes a turn', () => {
+    const acting = buildGameCharacterContextMenu(
+      makeChar({ noTurn: false }) as unknown as GameCharacter,
+      50,
+      makeService(),
+      callbacks(),
+      t
+    );
+    expect(names(acting)).toContain('☐ 手番をもたない');
+
+    const watching = buildGameCharacterContextMenu(
+      makeChar({ noTurn: true }) as unknown as GameCharacter,
+      50,
+      makeService(),
+      callbacks(),
+      t
+    );
+    expect(names(watching)).toContain('☑ 手番をもたない');
   });
 
   it('ticks the item by whether it may speak', () => {
@@ -213,5 +369,71 @@ describe('buildGameCharacterContextMenu()', () => {
       t
     );
     expect(menu.filter((m) => m.type === ContextMenuType.SEPARATOR)).toHaveLength(3);
+  });
+});
+
+describe('what a piece can fire from its sheet', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({});
+  });
+
+  function field(name: string, type: string, currentValue: string): DataElement {
+    return DataElement.create(name, '', {
+      [DataElementAttribute.ROLE]: DataElementRole.FIELD,
+      [DataElementAttribute.FIELD_TYPE]: type,
+      currentValue,
+    });
+  }
+
+  function buildPiece(): { piece: GameCharacter; part: DataElement } {
+    const owner = new ObjectNode();
+    owner.initialize();
+    const root = DataElement.create('character', '');
+    const detail = DataElement.create('detail', '');
+    const part = DataElement.create('火球', '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
+    part.appendChild(field('効果', DataElementFieldType.EFFECT, '炎上'));
+    part.appendChild(
+      field(
+        '範囲',
+        DataElementFieldType.RANGE_SHAPE,
+        encodeRangeShapeField({
+          name: '爆風',
+          cellPattern: '1',
+          gridType: 'square',
+          gridColor: '#FFFF00',
+          rangeColor: '#000000',
+          isRotatable: false,
+        })
+      )
+    );
+    owner.appendChild(root);
+    root.appendChild(detail);
+    detail.appendChild(part);
+    return { piece: owner as unknown as GameCharacter, part };
+  }
+
+  it('offers the effects and the ranges written on the sheet', () => {
+    const { piece } = buildPiece();
+
+    expect(collectRegisteredEffects(piece)).toEqual(['炎上']);
+    expect(collectRegisteredRangeShapes(piece).map((shape) => shape.label)).toEqual(['爆風']);
+  });
+
+  it('does not offer a range twice for a template kept of its part', () => {
+    const { piece, part } = buildPiece();
+
+    saveElementTemplate(piece, part);
+
+    expect(collectRegisteredRangeShapes(piece).map((shape) => shape.label)).toEqual(['爆風']);
+  });
+
+  it('offers nothing from a template once its part has gone from the sheet', () => {
+    const { piece, part } = buildPiece();
+
+    saveElementTemplate(piece, part);
+    part.destroy();
+
+    expect(collectRegisteredEffects(piece)).toEqual([]);
+    expect(collectRegisteredRangeShapes(piece)).toEqual([]);
   });
 });

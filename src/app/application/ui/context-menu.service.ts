@@ -1,8 +1,11 @@
 import { ComponentRef, inject, Injectable, ViewContainerRef } from '@angular/core';
 import { RolePermissionService } from '@axe/application/permission/role-permission.service';
+import { OverlayLayers } from '@axe/application/ui/overlay-layers';
+import { PanelRotationDegrees } from '@axe/application/ui/panel.service';
+import { DEFAULT_RADIAL_MENU_ROTATION_SPEED } from '@axe/domain/tabletop/radial-menu';
 import { TabletopObject } from '@axe/domain/tabletop/tabletop-object';
 
-interface ContextMenuPoint {
+export interface ContextMenuPoint {
   x: number;
   y: number;
 }
@@ -27,36 +30,193 @@ export interface ContextMenuAction {
   subActions?: ContextMenuAction[];
 }
 
+export interface ContextMenuRadialGroup {
+  name: string;
+  icon: string;
+  actions: ContextMenuAction[];
+}
+
+export interface ContextMenuOpenOptions {
+  layer?: number;
+  parentViewContainerRef?: ViewContainerRef;
+}
+
+type ContextMenuComponentClass = { new (...args: unknown[]): unknown };
+
 @Injectable()
 export class ContextMenuService {
   static defaultParentViewContainerRef: ViewContainerRef;
-  static ContextMenuComponentClass: { new (...args: unknown[]): unknown } = null!;
+  static ContextMenuComponentClass: ContextMenuComponentClass = null!;
+  static FourWayRadialMenuComponentClass: ContextMenuComponentClass | null = null;
+  /** The four-way menu is only ever wanted on a table seen from above, so it is fetched the first time. */
+  static loadFourWayRadialMenuComponent: (() => Promise<ContextMenuComponentClass>) | null = null;
   private readonly rolePermission = inject(RolePermissionService);
   private panelComponentRef: ComponentRef<unknown> | null = null;
 
   title: string = '';
   actions: ContextMenuAction[] = [];
+  radialGroups: ContextMenuRadialGroup[] = [];
+  radialMenuEnabled: boolean = false;
+  radialMenuRotationSpeed: number = DEFAULT_RADIAL_MENU_ROTATION_SPEED;
+  radialMenuClearanceRadius: number = 0;
+  radialMenuOcclusionHalfExtent: number = 0;
+  rotationDegrees: PanelRotationDegrees = 0;
+  /** Multiplies the menu text size. One keeps the sizes a menu outside the 2D table uses. */
+  fontScale: number = 1;
   position: ContextMenuPoint = { x: 0, y: 0 };
+  radialAnchorPosition: ContextMenuPoint | null = null;
+  /** Where the menu sits, for a caller that lives above where menus usually go. Zero is the usual place. */
+  layer: number = 0;
 
+  /**
+   * Whether a context menu opened through this service is still on screen.
+   *
+   * The service is provided once for the whole app and the menu components inject that same
+   * instance, so this answers for whichever caller opened the menu.
+   */
   get isShow(): boolean {
     return this.panelComponentRef !== null;
   }
 
-  open(
+  /**
+   * Opens the plain context menu at a screen point, closing any menu this service already has open.
+   *
+   * Nothing opens for a peer who may not edit the table. Without a parent container the menu goes
+   * into the layer of the detached window that has the focus, or the app's default layer.
+   */
+  open(position: ContextMenuPoint, actions: ContextMenuAction[], title?: string, options?: ContextMenuOpenOptions) {
+    this.openComponent(
+      ContextMenuService.ContextMenuComponentClass,
+      position,
+      actions,
+      [],
+      0,
+      true,
+      DEFAULT_RADIAL_MENU_ROTATION_SPEED,
+      1,
+      0,
+      0,
+      undefined,
+      title,
+      options?.parentViewContainerRef,
+      options?.layer ?? 0
+    );
+  }
+
+  /**
+   * Opens the plain menu turned to face one side of a table seen from above.
+   *
+   * The four-way radial menu hands on to this when an entry opens a list, so the list faces the
+   * same edge of the table and keeps this service's text scale.
+   */
+  openDirectional(
     position: ContextMenuPoint,
     actions: ContextMenuAction[],
+    rotationDegrees: PanelRotationDegrees,
     title?: string,
-    parentViewContainerRef?: ViewContainerRef
+    parentViewContainerRef?: ViewContainerRef,
+    layer = 0
+  ) {
+    this.openComponent(
+      ContextMenuService.ContextMenuComponentClass,
+      position,
+      actions,
+      [],
+      rotationDegrees,
+      true,
+      DEFAULT_RADIAL_MENU_ROTATION_SPEED,
+      this.fontScale,
+      0,
+      0,
+      undefined,
+      title,
+      parentViewContainerRef,
+      layer
+    );
+  }
+
+  /**
+   * Opens the four-way radial menu around the anchor point.
+   *
+   * With `radialMenuEnabled` the groups sit on a ring that rotates on its own, and a right-click
+   * turns it a step further. Without it the menu shows a close button and one launcher for each
+   * side of the table; choosing a side replaces it with the plain menu turned to face that side.
+   *
+   * The radial component is fetched the first time it is wanted and the menu appears once it
+   * arrives. If the fetch fails the plain menu opens with the same actions instead; with no loader
+   * registered, nothing opens. Nothing opens either for a peer who may not edit the table.
+   */
+  openRadial(
+    position: ContextMenuPoint,
+    actions: ContextMenuAction[],
+    radialGroups: ContextMenuRadialGroup[],
+    title?: string,
+    radialMenuEnabled = false,
+    radialMenuRotationSpeed = DEFAULT_RADIAL_MENU_ROTATION_SPEED,
+    fontScale = 1,
+    radialMenuClearanceRadius = 0,
+    radialMenuOcclusionHalfExtent = 0,
+    radialAnchorPosition?: ContextMenuPoint,
+    parentViewContainerRef?: ViewContainerRef,
+    layer = 0
+  ) {
+    const open = (componentClass: ContextMenuComponentClass) =>
+      this.openComponent(
+        componentClass,
+        position,
+        actions,
+        radialGroups,
+        0,
+        radialMenuEnabled,
+        radialMenuRotationSpeed,
+        fontScale,
+        radialMenuClearanceRadius,
+        radialMenuOcclusionHalfExtent,
+        radialAnchorPosition,
+        title,
+        parentViewContainerRef,
+        layer
+      );
+    const loaded = ContextMenuService.FourWayRadialMenuComponentClass;
+    if (loaded) {
+      open(loaded);
+      return;
+    }
+    // A menu that fails to arrive falls back to the one that is already here. Left to reject,
+    // a single missing chunk takes every right-click on the table with it for the whole session.
+    void ContextMenuService.loadFourWayRadialMenuComponent?.()
+      .then((componentClass) => {
+        ContextMenuService.FourWayRadialMenuComponentClass = componentClass;
+        open(componentClass);
+      })
+      .catch(() => open(ContextMenuService.ContextMenuComponentClass));
+  }
+
+  private openComponent(
+    componentClass: ContextMenuComponentClass,
+    position: ContextMenuPoint,
+    actions: ContextMenuAction[],
+    radialGroups: ContextMenuRadialGroup[],
+    rotationDegrees: PanelRotationDegrees,
+    radialMenuEnabled: boolean,
+    radialMenuRotationSpeed: number,
+    fontScale: number,
+    radialMenuClearanceRadius: number,
+    radialMenuOcclusionHalfExtent: number,
+    radialAnchorPosition?: ContextMenuPoint,
+    title?: string,
+    parentViewContainerRef?: ViewContainerRef,
+    layer = 0
   ) {
     this.close();
     if (!this.rolePermission.canEditTabletop) return;
-    if (!parentViewContainerRef) {
-      parentViewContainerRef = ContextMenuService.defaultParentViewContainerRef;
-    }
-    const injector = parentViewContainerRef.injector;
 
-    const panelComponentRef = parentViewContainerRef.createComponent(ContextMenuService.ContextMenuComponentClass, {
-      index: parentViewContainerRef.length,
+    const parent =
+      parentViewContainerRef ?? OverlayLayers.current() ?? ContextMenuService.defaultParentViewContainerRef;
+    const injector = parent.injector;
+
+    const panelComponentRef = parent.createComponent(componentClass, {
+      index: parent.length,
       injector,
     });
 
@@ -66,18 +226,30 @@ export class ContextMenuService {
     if (actions) {
       childPanelService.actions = actions;
     }
+    childPanelService.radialGroups = radialGroups;
+    childPanelService.radialMenuEnabled = radialMenuEnabled;
+    childPanelService.radialMenuRotationSpeed = radialMenuRotationSpeed;
+    childPanelService.radialMenuClearanceRadius = radialMenuClearanceRadius;
+    childPanelService.radialMenuOcclusionHalfExtent = radialMenuOcclusionHalfExtent;
+    childPanelService.rotationDegrees = rotationDegrees;
+    childPanelService.fontScale = Number.isFinite(fontScale) && fontScale > 0 ? fontScale : 1;
     if (position) {
       childPanelService.position.x = position.x;
       childPanelService.position.y = position.y;
     }
+    childPanelService.radialAnchorPosition = radialAnchorPosition
+      ? { x: radialAnchorPosition.x, y: radialAnchorPosition.y }
+      : null;
 
     childPanelService.title = title != null ? title : '';
+    childPanelService.layer = layer;
 
     panelComponentRef.onDestroy(() => {
       childPanelService.panelComponentRef = null;
     });
   }
 
+  /** Closes the menu this service opened, if it is still up. */
   close() {
     if (this.panelComponentRef) {
       this.panelComponentRef.destroy();

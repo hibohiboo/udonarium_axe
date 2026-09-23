@@ -12,16 +12,20 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
 import { Network } from '@axe/core/index';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { ImageFile } from '@axe/core/storage/image-file';
 import { ImageStorage } from '@axe/core/storage/image-storage';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { portraitNameOf } from '@axe/domain/character/character-portrait';
 import { GameCharacter } from '@axe/domain/character/game-character';
+import { chatColorOf, DEFAULT_CHAT_COLOR } from '@axe/domain/chat/chat-color';
 import { DataElement } from '@axe/domain/data/data-element';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
+import { PortraitChoice, PortraitPickerComponent } from '@axe/ui/components/portrait-picker/portrait-picker.component';
+import { NgSelectWindowDirective } from '@axe/ui/directives/ng-select-window.directive';
 import { SafePipe } from '@axe/ui/pipes/safe.pipe';
 import { TranslocoModule } from '@jsverse/transloco';
 import { NgOptionComponent, NgSelectComponent } from '@ng-select/ng-select';
@@ -30,7 +34,17 @@ import { NgOptionComponent, NgSelectComponent } from '@ng-select/ng-select';
   changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'controller-input',
   templateUrl: './controller-input.component.html',
-  imports: [NgClass, NgSelectComponent, FormsModule, NgOptionComponent, NgStyle, SafePipe, TranslocoModule],
+  imports: [
+    NgClass,
+    NgSelectComponent,
+    FormsModule,
+    NgOptionComponent,
+    NgSelectWindowDirective,
+    NgStyle,
+    PortraitPickerComponent,
+    SafePipe,
+    TranslocoModule,
+  ],
 })
 export class ControllerInputComponent {
   private readonly destroyRef = inject(DestroyRef);
@@ -50,30 +64,24 @@ export class ControllerInputComponent {
     return object instanceof GameCharacter ? object.selectedPortraitIndex : 0;
   });
 
+  /**
+   * Switches the speaking character to one of its portraits, written on the character, from the
+   * portrait picker.
+   */
   setPortraitIndex(num: number) {
     const object = this.objectStore.get(this.sendFrom());
     if (object instanceof GameCharacter) object.selectedPortraitIndex = num;
     this.portraitIndex.set(num);
   }
 
-  stepPortrait(dir: number): void {
-    const next = this.portraitIndex() + dir;
-    if (next < 0 || next >= this.portraitCount()) return;
-    this.setPortraitIndex(next);
-  }
-
-  get portraitLabel(): string {
-    const portrait = this.selectedPortrait();
-    if (portrait?.currentValue) return portrait.currentValue as string;
-    return `${this.portraitIndex() + 1}/${this.portraitCount()}`;
-  }
-
+  /** Whether a whisper target is chosen, which tints the input to show the message is private. */
   get isDirect(): boolean {
     return this.sendTo() != null && this.sendTo().length > 0;
   }
 
   private _colorSelectNo: number = 0;
 
+  /** Which of the speaker's three chat colours is picked, held between 0 and 2. */
   get colorSelectNo(): number {
     return this._colorSelectNo;
   }
@@ -82,6 +90,10 @@ export class ControllerInputComponent {
     this._colorSelectNo = Math.max(0, Math.min(2, num));
   }
 
+  /**
+   * The inline style for one colour swatch, drawn with a thicker, rounded border when it is the
+   * picked one.
+   */
   colorSelectorStyle(index: number): Record<string, string> {
     const selected = index === this.colorSelectNo;
     return {
@@ -91,6 +103,7 @@ export class ControllerInputComponent {
     };
   }
 
+  /** The current speaker's picked chat colour, which the remote controller sends its messages in. */
   get selectChatColor(): string {
     return this.characterChatColor(this.colorSelectNo);
   }
@@ -106,15 +119,17 @@ export class ControllerInputComponent {
     return null;
   });
 
-  readonly portraitCount = computed((): number => {
+  readonly portraitChoices = computed<PortraitChoice[]>(() => {
+    this.objectChange.fileVersion();
     this.objectChange.versionOf(this.sendFrom())();
     const object = this.objectStore.get(this.sendFrom());
-    if (object instanceof GameCharacter) {
-      return object.imageDataElement?.children.length ?? 0;
-    } else if (object instanceof PeerCursor) {
-      return 0;
-    }
-    return 0;
+    if (!(object instanceof GameCharacter)) return [];
+    const children = (object.imageDataElement?.children ?? []) as DataElement[];
+    return children.map((element, index) => ({
+      index,
+      name: portraitNameOf(element),
+      url: this.imageStorage.get(element.value as string)?.url ?? '',
+    }));
   });
 
   readonly imageFile = computed((): ImageFile => {
@@ -140,6 +155,7 @@ export class ControllerInputComponent {
     return all.filter((character) => this.isVisibleToMe(character));
   });
 
+  /** The reader's own cursor, which is spoken as when no character is chosen. */
   get myPeer(): PeerCursor {
     return PeerCursor.myCursor;
   }
@@ -149,19 +165,24 @@ export class ControllerInputComponent {
   readonly selectNum = input(0);
   readonly allBox = output<{ check: boolean }>();
 
+  /** Picks one of the speaker's three chat colours from its swatch. */
   setColorNum(num: number) {
     this.colorSelectNo = num;
   }
 
+  /**
+   * The chat colour in one slot of the speaking character, or the default colour when the speaker
+   * is not a character.
+   */
   characterChatColor(num: number) {
     const object = this.objectStore.get(this.sendFrom());
-    if (object instanceof GameCharacter) {
-      return object.chatColorCode[num];
-    } else {
-      return '#000000';
-    }
+    return object instanceof GameCharacter ? chatColorOf(object, num) : DEFAULT_CHAT_COLOR;
   }
 
+  /**
+   * Opens the chat colour settings panel for the speaking character near the pointer; does nothing
+   * when the speaker is not a character.
+   */
   shoeColorSetting() {
     const object = this.objectStore.get(this.sendFrom());
     if (object instanceof GameCharacter) {
@@ -212,6 +233,7 @@ export class ControllerInputComponent {
     }, this.destroyRef);
   }
 
+  /** Asks the parent to tick every character when none is selected, or to untick them all otherwise. */
   allBoxCheck() {
     if (this.selectNum() > 0) {
       this.allBox.emit({ check: false });

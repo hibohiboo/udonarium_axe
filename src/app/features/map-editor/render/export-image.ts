@@ -1,3 +1,4 @@
+import { isTextureId, TEXTURE_ASSET_URLS } from '@axe/domain/media/texture-catalog';
 import { imageStampIdentifier, isImageStampId } from '@axe/features/map-editor/assets/image-stamp';
 import { StampDef } from '@axe/features/map-editor/assets/stamp-types';
 import {
@@ -10,13 +11,7 @@ import {
   StampItem,
   StampLayer,
 } from '@axe/features/map-editor/model/scene';
-import {
-  imageTextureIdentifier,
-  isImageTextureId,
-  isTextureId,
-  normalizeTextureId,
-  TEXTURE_ASSET_URLS,
-} from '@axe/features/map-editor/model/textures';
+import { imageTextureIdentifier, isImageTextureId, normalizeTextureId } from '@axe/features/map-editor/model/textures';
 import { getRasterImage, warmRasterImages } from '@axe/features/map-editor/render/raster-image';
 import { RenderHelpers, renderScene } from '@axe/features/map-editor/render/render-scene';
 import { getStampImage, warmStampImages } from '@axe/features/map-editor/render/stamp-image';
@@ -138,6 +133,13 @@ function createTarget(width: number, height: number): OffscreenTarget | null {
   return null;
 }
 
+/**
+ * Draws the whole map into an image file for exporting.
+ *
+ * Every stamp, picture and texture is loaded first, so nothing is left out of the image. The image
+ * is scaled down where its longest side would pass 8192px. WebP is asked for unless told otherwise,
+ * and PNG is made where the browser cannot make the type asked for.
+ */
 export async function exportSceneToBlob(scene: MapScene, defs: StampDef[], opts: ExportOptions = {}): Promise<Blob> {
   const scale = clampScale(scene, opts.scale ?? 1);
   const outW = Math.max(1, Math.round(sceneWidthPx(scene) * scale));

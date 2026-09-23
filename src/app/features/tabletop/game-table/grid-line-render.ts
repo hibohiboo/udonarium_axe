@@ -8,7 +8,21 @@ import {
 } from '@axe/domain/tabletop/hex-geometry';
 
 export class GridLineRender {
-  constructor(readonly canvasElement: HTMLCanvasElement) {}
+  /**
+   * @param canvasElement the canvas the grid is drawn onto
+   * @param scale how many canvas pixels one table pixel comes to. Below one the canvas holds fewer
+   * pixels than the board covers and the browser lets it back up to size, which a grid of thin
+   * lines takes without much showing for it.
+   */
+  constructor(
+    readonly canvasElement: HTMLCanvasElement,
+    private readonly scale: number = 1
+  ) {}
+
+  /** The canvas pixels a stretch of the table comes to at the scale this render draws at. */
+  private canvasPx(tablePx: number): number {
+    return this.scale === 1 ? tablePx : Math.max(1, Math.ceil(tablePx * this.scale));
+  }
 
   private makeBrush(
     context: CanvasRenderingContext2D,
@@ -26,6 +40,12 @@ export class GridLineRender {
     context.textAlign = 'center';
   }
 
+  /**
+   * Draws the grid over a whole table onto the canvas, its width and height counted in squares,
+   * with each cell labelled column-row.
+   *
+   * The canvas is sized even for a negative grid type, which draws no grid.
+   */
   render(
     width: number,
     height: number,
@@ -37,9 +57,12 @@ export class GridLineRender {
     offsetTop: number = 0,
     offsetLeft: number = 0
   ) {
-    this.canvasElement.width = width * gridSize;
-    this.canvasElement.height = height * gridSize;
-    const context: CanvasRenderingContext2D = this.canvasElement.getContext('2d')!;
+    this.canvasElement.width = this.canvasPx(width * gridSize);
+    this.canvasElement.height = this.canvasPx(height * gridSize);
+    // A canvas with nothing to draw on cannot be drawn on.
+    const context = this.canvasElement.getContext('2d');
+    if (!context) return;
+    if (this.scale !== 1) context.setTransform(this.scale, 0, 0, this.scale, 0, 0);
 
     if (gridType < 0) return;
 
@@ -56,6 +79,13 @@ export class GridLineRender {
     }
   }
 
+  /**
+   * Draws only the stretch of grid a surface shows, sized in pixels and offset into the table, with
+   * labels that can be left off or prefixed with a wall's letter.
+   *
+   * False only when the canvas cannot be drawn on; a negative grid type draws nothing and still
+   * counts as drawn.
+   */
   renderViewport(
     widthPx: number,
     heightPx: number,
@@ -68,12 +98,15 @@ export class GridLineRender {
     drawLabels: boolean = true,
     labelPrefix: string = '',
     labelMatrix: readonly [number, number, number, number] | null = null
-  ) {
-    this.canvasElement.width = Math.max(1, Math.ceil(widthPx));
-    this.canvasElement.height = Math.max(1, Math.ceil(heightPx));
-    const context: CanvasRenderingContext2D = this.canvasElement.getContext('2d')!;
+  ): boolean {
+    this.canvasElement.width = Math.max(1, Math.ceil(widthPx * this.scale));
+    this.canvasElement.height = Math.max(1, Math.ceil(heightPx * this.scale));
+    // A canvas with nothing to draw on cannot be drawn on.
+    const context = this.canvasElement.getContext('2d');
+    if (!context) return false;
+    if (this.scale !== 1) context.setTransform(this.scale, 0, 0, this.scale, 0, 0);
 
-    if (gridType < 0) return;
+    if (gridType < 0) return true;
 
     this.makeBrush(context, gridSize, gridColor, gridFontColor);
 
@@ -107,6 +140,7 @@ export class GridLineRender {
         );
         break;
     }
+    return true;
   }
 
   private drawCellLabel(

@@ -1,7 +1,12 @@
-import { ComponentRef, ViewContainerRef } from '@angular/core';
-import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
+import { Component, ComponentRef, computed, ViewContainerRef } from '@angular/core';
+import { OverlayLayers } from '@axe/application/ui/overlay-layers';
+import { PanelFrame, PanelOption, PanelService } from '@axe/application/ui/panel.service';
+import { Logger } from '@axe/core/logging/logger';
 
 class DummyBodyComponent {}
+
+@Component({ selector: 'dummy-panel-body', template: '' })
+class DummyPanelBodyComponent {}
 
 function setupOpenMocks(initialChildState?: Partial<PanelService>) {
   const service = new PanelService();
@@ -10,25 +15,32 @@ function setupOpenMocks(initialChildState?: Partial<PanelService>) {
 
   const bodyInstance = new DummyBodyComponent();
   const setInput = vi.fn();
+  const setInitialRotation = vi.fn();
   const destroy = vi.fn();
   let destroyCallback: (() => void) | undefined;
+  let self: { destroy: () => void } | null = null;
 
   const panelComponentRef = {
     instance: {
-      content: () =>
+      setInitialRotation,
+      claimSelf: (frame: { destroy: () => void }) => {
+        self = frame;
+      },
+      closeTab: () => self?.destroy(),
+      openTab: () =>
         ({
-          createComponent: () => ({ instance: bodyInstance }) as ComponentRef<DummyBodyComponent>,
-        }) as unknown as ViewContainerRef,
+          instance: bodyInstance,
+          onDestroy: (callback: () => void) => {
+            destroyCallback = callback;
+          },
+        }) as unknown as ComponentRef<DummyBodyComponent>,
     },
     injector: {
       get: () => childPanelService,
     },
     setInput,
     destroy,
-    onDestroy: (callback: () => void) => {
-      destroyCallback = callback;
-    },
-  } as unknown as ComponentRef<{ content: () => ViewContainerRef }>;
+  } as unknown as ComponentRef<{ openTab: () => ComponentRef<DummyBodyComponent> }>;
 
   const parentViewContainerRef = {
     injector: {},
@@ -42,6 +54,7 @@ function setupOpenMocks(initialChildState?: Partial<PanelService>) {
     panelComponentRef,
     parentViewContainerRef,
     setInput,
+    setInitialRotation,
     destroy,
     bodyInstance,
     runDestroyCallback: () => destroyCallback?.(),
@@ -49,6 +62,22 @@ function setupOpenMocks(initialChildState?: Partial<PanelService>) {
 }
 
 describe('PanelService', () => {
+  it('takes what kind of panel it is from the selector of what it opens', () => {
+    const { service, childPanelService, parentViewContainerRef } = setupOpenMocks();
+
+    service.open(DummyPanelBodyComponent, undefined, parentViewContainerRef);
+
+    expect(childPanelService.panelKind()).toBe('dummy-panel-body');
+  });
+
+  it('leaves the kind empty for what carries no selector of its own', () => {
+    const { service, childPanelService, parentViewContainerRef } = setupOpenMocks();
+
+    service.open(DummyBodyComponent, undefined, parentViewContainerRef);
+
+    expect(childPanelService.panelKind()).toBe('');
+  });
+
   it('starts hidden', () => {
     const { service } = setupOpenMocks();
     expect(service.isShow).toBe(false);
@@ -102,6 +131,56 @@ describe('PanelService', () => {
     expect(setInput).toHaveBeenCalledWith('minHeight', 0);
   });
 
+  it('keeps frameless on the service rather than on the panel inputs', () => {
+    const { service, childPanelService, parentViewContainerRef, setInput } = setupOpenMocks();
+
+    service.open(DummyBodyComponent, { width: 320, height: 240, frameless: true }, parentViewContainerRef);
+
+    expect(childPanelService.frameless).toBe(true);
+    expect(setInput).not.toHaveBeenCalledWith('frameless', true);
+  });
+
+  it('lets the panel know it was opened into a window of its own', () => {
+    const { service, childPanelService, parentViewContainerRef } = setupOpenMocks();
+
+    service.open(DummyBodyComponent, { windowed: true }, parentViewContainerRef);
+
+    expect(childPanelService.windowed()).toBe(true);
+  });
+
+  it('leaves a panel opened onto the table saying it is not in one', () => {
+    const { service, childPanelService, parentViewContainerRef } = setupOpenMocks();
+
+    service.open(DummyBodyComponent, { windowed: false }, parentViewContainerRef);
+
+    expect(childPanelService.windowed()).toBe(false);
+  });
+
+  it('applies an explicit initial panel rotation', () => {
+    const { service, parentViewContainerRef, setInitialRotation } = setupOpenMocks();
+
+    service.open(DummyBodyComponent, { rotationDegrees: 180 }, parentViewContainerRef);
+
+    expect(setInitialRotation).toHaveBeenCalledWith(180);
+  });
+
+  it('inherits the direction while a context-menu action opens a panel', () => {
+    const { service, parentViewContainerRef, setInitialRotation } = setupOpenMocks();
+
+    service.runWithInitialRotation(90, () => service.open(DummyBodyComponent, undefined, parentViewContainerRef));
+
+    expect(setInitialRotation).toHaveBeenCalledWith(90);
+  });
+
+  it('keeps the inherited direction until a lazy panel has loaded', async () => {
+    const { service, parentViewContainerRef, setInitialRotation } = setupOpenMocks();
+
+    service.runWithInitialRotation(270, () =>
+      service.openLazy(() => Promise.resolve(DummyBodyComponent), undefined, undefined, parentViewContainerRef)
+    );
+    await vi.waitFor(() => expect(setInitialRotation).toHaveBeenCalledWith(270));
+  });
+
   it('falls back to the default container when none is given', () => {
     const { service, childPanelService, setInput, bodyInstance, parentViewContainerRef } = setupOpenMocks();
 
@@ -114,6 +193,51 @@ describe('PanelService', () => {
     expect(childPanelService.height).toBe(240);
     expect(setInput).toHaveBeenCalledWith('width', 320);
     expect(setInput).toHaveBeenCalledWith('height', 240);
+  });
+
+  describe('a panel opened from a panel in a window of its own', () => {
+    const table = { createComponent: () => expect.unreachable('opened on the table') } as unknown as ViewContainerRef;
+
+    function standingIn(service: PanelService, paper: Document): void {
+      service.attachTo({ frameDocument: () => paper } as unknown as PanelFrame);
+    }
+
+    afterEach(() => OverlayLayers.reset());
+
+    it('opens in that window, and knows it is in one', () => {
+      const { service, childPanelService, parentViewContainerRef } = setupOpenMocks();
+      const paper = document.implementation.createHTMLDocument('window');
+      OverlayLayers.attach(paper, parentViewContainerRef);
+      PanelService.defaultParentViewContainerRef = table;
+      standingIn(service, paper);
+
+      service.open(DummyBodyComponent, { title: 'chat settings' });
+
+      expect(childPanelService.windowed()).toBe(true);
+    });
+
+    it('opens in that window once a lazy panel has loaded', async () => {
+      const { service, childPanelService, parentViewContainerRef } = setupOpenMocks();
+      const paper = document.implementation.createHTMLDocument('window');
+      OverlayLayers.attach(paper, parentViewContainerRef);
+      PanelService.defaultParentViewContainerRef = table;
+      standingIn(service, paper);
+
+      service.openLazy(() => Promise.resolve(DummyBodyComponent));
+
+      await vi.waitFor(() => expect(childPanelService.windowed()).toBe(true));
+    });
+
+    it('opens on the table from a panel standing on the table', () => {
+      const { service, childPanelService, parentViewContainerRef } = setupOpenMocks();
+      OverlayLayers.attach(document.implementation.createHTMLDocument('window'), table);
+      PanelService.defaultParentViewContainerRef = parentViewContainerRef;
+      standingIn(service, document);
+
+      service.open(DummyBodyComponent);
+
+      expect(childPanelService.windowed()).toBe(false);
+    });
   });
 
   it('destroys the panel through the child service that made it', () => {
@@ -133,6 +257,17 @@ describe('PanelService', () => {
 
     runDestroyCallback();
     expect(childPanelService.isShow).toBe(false);
+  });
+
+  it('lets a name go when the panel that took it is taken away', () => {
+    const { service, parentViewContainerRef, runDestroyCallback } = setupOpenMocks();
+
+    service.open(DummyBodyComponent, { single: 'named-panel' }, parentViewContainerRef);
+    expect(service.hasSingle('named-panel')).toBe(true);
+
+    runDestroyCallback();
+
+    expect(service.hasSingle('named-panel')).toBe(false);
   });
 
   it('closes safely and repeatedly even with no panel', () => {
@@ -215,6 +350,154 @@ describe('PanelService', () => {
       const adjusted = PanelService.clampPanelOptionToViewport({ width: 400, height: 300 }, fallback);
       expect(adjusted.left).toBeUndefined();
       expect(adjusted.top).toBeUndefined();
+    });
+
+    it('clamps a sideways panel by its rotated outer bounds', () => {
+      const fallback = new PanelService();
+      const adjusted = PanelService.clampPanelOptionToViewport(
+        { left: -100, top: 250, width: 400, height: 200, rotationDegrees: 90 },
+        fallback
+      );
+
+      expect(adjusted.left).toBe(-100);
+      expect(adjusted.top).toBe(250);
+    });
+
+    it('moves a sideways panel only when its rotated bounds leave the viewport', () => {
+      const fallback = new PanelService();
+      const adjusted = PanelService.clampPanelOptionToViewport(
+        { left: -250, top: 650, width: 400, height: 200, rotationDegrees: 270 },
+        fallback
+      );
+
+      expect(adjusted.left).toBe(-100);
+      expect(adjusted.top).toBe(420);
+    });
+  });
+
+  describe('a panel still on its way', () => {
+    it('never opens when it was told to close before it arrived', async () => {
+      const service = new PanelService();
+      const opened = vi.spyOn(service, 'open').mockReturnValue({} as never);
+      let arrive: () => void = () => undefined;
+      const waiting = new Promise<typeof DummyPanelBodyComponent>((resolve) => {
+        arrive = () => resolve(DummyPanelBodyComponent);
+      });
+
+      service.openLazy(() => waiting, { single: 'a-panel' });
+      expect(service.closeSingle('a-panel')).toBe(true);
+      arrive();
+      await waiting;
+      await Promise.resolve();
+
+      expect(opened).not.toHaveBeenCalled();
+    });
+
+    it('opens as asked when nobody took the name back', async () => {
+      const service = new PanelService();
+      const opened = vi.spyOn(service, 'open').mockReturnValue({} as never);
+
+      service.openLazy(() => Promise.resolve(DummyPanelBodyComponent), { single: 'another-panel' });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(opened).toHaveBeenCalled();
+    });
+
+    it('lets the name go when it never arrives, so the next ask can open', async () => {
+      const service = new PanelService();
+      const opened = vi.spyOn(service, 'open').mockReturnValue({} as never);
+      vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+
+      service.openLazy(() => Promise.reject(new Error('no chunk')), { single: 'third-panel' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(service.closeSingle('third-panel')).toBe(false);
+
+      service.openLazy(() => Promise.resolve(DummyPanelBodyComponent), { single: 'third-panel' });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(opened).toHaveBeenCalled();
+    });
+  });
+
+  describe('a panel whose code cannot be fetched', () => {
+    afterEach(() => {
+      PanelService.loadFailureNotice = null;
+    });
+
+    it('tells the reader a reload is needed', async () => {
+      const service = new PanelService();
+      vi.spyOn(service, 'open').mockReturnValue({} as never);
+      vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+      const notice = vi.fn();
+      PanelService.loadFailureNotice = notice;
+
+      service.openLazy(() => Promise.reject(new TypeError('Failed to fetch dynamically imported module')));
+      await vi.waitFor(() => expect(notice).toHaveBeenCalledTimes(1));
+    });
+
+    it('says nothing of a reload for a panel that arrived but could not open', async () => {
+      const service = new PanelService();
+      vi.spyOn(service, 'open').mockImplementation(() => {
+        throw new Error('broken panel');
+      });
+      const logged = vi.spyOn(Logger, 'error').mockImplementation(() => undefined);
+      const notice = vi.fn();
+      PanelService.loadFailureNotice = notice;
+
+      service.openLazy(() => Promise.resolve(DummyPanelBodyComponent));
+      await vi.waitFor(() => expect(logged).toHaveBeenCalled());
+
+      expect(notice).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('following a panel that is standing', () => {
+    it('lets a button hear the name being spoken for and let go of', async () => {
+      const service = new PanelService();
+      vi.spyOn(service, 'open').mockReturnValue({} as never);
+      const isOpen = computed(() => service.hasSingle('followed-panel'));
+      expect(isOpen()).toBe(false);
+
+      service.openLazy(() => new Promise<typeof DummyPanelBodyComponent>(() => undefined), {
+        single: 'followed-panel',
+      });
+      expect(isOpen()).toBe(true);
+
+      service.closeSingle('followed-panel');
+
+      expect(isOpen()).toBe(false);
+    });
+  });
+
+  describe('scrollable panel', () => {
+    const elementOf = (name: string) => ({ name }) as unknown as HTMLDivElement;
+
+    it('takes the default panel body when nobody claimed it', () => {
+      const service = new PanelService();
+      const body = elementOf('body');
+      service.setDefaultScrollablePanel(body);
+      expect(service.scrollablePanel).toBe(body);
+    });
+
+    it('keeps a claimed element even when the panel body arrives later', () => {
+      const service = new PanelService();
+      const log = elementOf('log');
+      service.claimScrollablePanel(log);
+      service.setDefaultScrollablePanel(elementOf('body'));
+      expect(service.scrollablePanel).toBe(log);
+    });
+
+    it('lets a claim replace the panel body', () => {
+      const service = new PanelService();
+      const log = elementOf('log');
+      service.setDefaultScrollablePanel(elementOf('body'));
+      service.claimScrollablePanel(log);
+      expect(service.scrollablePanel).toBe(log);
     });
   });
 });

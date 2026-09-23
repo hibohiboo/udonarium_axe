@@ -10,8 +10,8 @@ import {
   viewChild,
 } from '@angular/core';
 import { ChatMessageService } from '@axe/application/chat/chat-message.service';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { PanelService } from '@axe/application/ui/panel.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { ObjectStore } from '@axe/core/sync/object-store';
 
 @Component({
@@ -33,6 +33,11 @@ export class CardStackListImageComponent {
 
   readonly cardAreaWidth = signal(0);
 
+  /**
+   * A fixed vertical offset of -26px for a portrait drawn over the card list.
+   *
+   * This component's template does not read it.
+   */
   get portraitYPos(): number {
     return 0 - 26;
   }

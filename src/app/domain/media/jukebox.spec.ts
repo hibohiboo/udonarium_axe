@@ -3,7 +3,6 @@ import { updateAudioResource$ } from '@axe/core/event/domain-events';
 import { AudioFile } from '@axe/core/storage/audio-file';
 import { AudioPlayer, VolumeType } from '@axe/core/storage/audio-player';
 import { AudioStorage } from '@axe/core/storage/audio-storage';
-import { ObjectStore } from '@axe/core/sync/object-store';
 import { AudioTag } from '@axe/domain/media/audio-tag';
 import { Jukebox } from '@axe/domain/media/jukebox';
 import { Config } from '@axe/domain/peer/config';
@@ -32,20 +31,11 @@ function stubAudioPlayerStop() {
 }
 
 describe('Jukebox', () => {
-  let store: ObjectStore;
-
   beforeEach(() => {
     TestBed.configureTestingModule({});
-    store = ObjectStore.instance;
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
   });
 
   afterEach(() => {
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     AudioStorage.instance.audios.forEach((a) => AudioStorage.instance.delete(a.identifier));
     vi.restoreAllMocks();
   });
@@ -282,6 +272,139 @@ describe('Jukebox', () => {
       updateAudioResource$.emit();
 
       expect(playSpy).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('starting the track on a gesture', () => {
+    const TRACK = 'bgm-gesture';
+
+    function playerThatTheBrowserMayRefuse() {
+      const browser = { allowsPlayback: false, canPlayTrack: true };
+      const sounding = new WeakSet<AudioPlayer>();
+      const refused = new WeakSet<AudioPlayer>();
+      stubAudioPlayerStop();
+      vi.spyOn(AudioPlayer.prototype, 'play').mockImplementation(function (this: AudioPlayer) {
+        sounding.delete(this);
+        refused.delete(this);
+        if (!browser.allowsPlayback) refused.add(this);
+        else if (browser.canPlayTrack) sounding.add(this);
+      });
+      vi.spyOn(AudioPlayer.prototype, 'paused', 'get').mockImplementation(function (this: AudioPlayer) {
+        return !sounding.has(this);
+      });
+      vi.spyOn(AudioPlayer.prototype, 'isAwaitingGesture', 'get').mockImplementation(function (this: AudioPlayer) {
+        return refused.has(this);
+      });
+      return browser;
+    }
+
+    function joinRoomPlaying(): { jukebox: Jukebox; playSpy: ReturnType<typeof vi.fn> } {
+      const jukebox = new Jukebox();
+      jukebox.initialize();
+      AudioStorage.instance.add(makeReadyAudio(TRACK));
+      const context = jukebox.toContext();
+      context.syncData = { ...context.syncData, audioIdentifier: TRACK, isPlaying: true };
+      jukebox.apply(context);
+      const playSpy = vi.spyOn(jukebox as unknown as { _play: () => void }, '_play');
+      return { jukebox, playSpy: playSpy as unknown as ReturnType<typeof vi.fn> };
+    }
+
+    function lift() {
+      document.body.dispatchEvent(new Event('touchend', { bubbles: true }));
+    }
+
+    it('tries again on a later tap when the gesture that ended a pan could not start the track', () => {
+      const browser = playerThatTheBrowserMayRefuse();
+      const { jukebox, playSpy } = joinRoomPlaying();
+
+      lift();
+      expect(playSpy).toHaveBeenCalledTimes(1);
+
+      browser.allowsPlayback = true;
+      lift();
+      expect(playSpy).toHaveBeenCalledTimes(2);
+
+      lift();
+      expect(playSpy).toHaveBeenCalledTimes(2);
+      jukebox.destroy();
+    });
+
+    it('leaves a track that is already sounding where it is', () => {
+      const browser = playerThatTheBrowserMayRefuse();
+      browser.allowsPlayback = true;
+      const { jukebox, playSpy } = joinRoomPlaying();
+
+      lift();
+
+      expect(playSpy).not.toHaveBeenCalled();
+      jukebox.destroy();
+    });
+
+    it('does not try again a track that failed for a reason a gesture cannot help', () => {
+      const browser = playerThatTheBrowserMayRefuse();
+      browser.allowsPlayback = true;
+      browser.canPlayTrack = false;
+      const { jukebox, playSpy } = joinRoomPlaying();
+
+      lift();
+      lift();
+
+      expect(playSpy).not.toHaveBeenCalled();
+      jukebox.destroy();
+    });
+
+    it('tries a track the room starts after a gesture that came while the room was silent', () => {
+      const browser = playerThatTheBrowserMayRefuse();
+      const jukebox = new Jukebox();
+      jukebox.initialize();
+      AudioStorage.instance.add(makeReadyAudio(TRACK));
+
+      lift();
+      const context = jukebox.toContext();
+      context.syncData = { ...context.syncData, audioIdentifier: TRACK, isPlaying: true };
+      jukebox.apply(context);
+      const playSpy = vi.spyOn(jukebox as unknown as { _play: () => void }, '_play');
+
+      browser.allowsPlayback = true;
+      lift();
+      lift();
+
+      expect(playSpy).toHaveBeenCalledTimes(1);
+      jukebox.destroy();
+    });
+
+    it('lets go of the gestures once it leaves the room', () => {
+      playerThatTheBrowserMayRefuse();
+      const { jukebox, playSpy } = joinRoomPlaying();
+
+      jukebox.destroy();
+      lift();
+
+      expect(playSpy).not.toHaveBeenCalled();
+    });
+
+    it('waits for a file still arriving without starting again, then tries once the browser refused it', () => {
+      playerThatTheBrowserMayRefuse();
+      const jukebox = new Jukebox();
+      jukebox.initialize();
+      const audio = makeAudioFile({ identifier: 'bgm-arriving' });
+      AudioStorage.instance.add(audio);
+      const context = jukebox.toContext();
+      context.syncData = { ...context.syncData, audioIdentifier: 'bgm-arriving', isPlaying: true };
+      jukebox.apply(context);
+      const playSpy = vi.spyOn(jukebox as unknown as { _play: () => void }, '_play');
+
+      lift();
+      lift();
+      expect(playSpy).not.toHaveBeenCalled();
+
+      const ctx = (audio as unknown as { context: Record<string, unknown> }).context;
+      ctx['blob'] = new Blob(['data']);
+      ctx['url'] = 'blob:data';
+      updateAudioResource$.emit();
+      lift();
+      expect(playSpy).toHaveBeenCalledTimes(1);
+      jukebox.destroy();
     });
   });
 

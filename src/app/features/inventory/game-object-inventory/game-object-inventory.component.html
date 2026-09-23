@@ -1,379 +1,339 @@
-@if (!isPanelMinimized()) {
-  <div class="text-ui-text bg-ui-panel flex h-full flex-col overflow-hidden text-[13px]">
-    @let objects = getGameObjects(selectTab());
-
-    <div class="bg-ui-panel border-ui-border-panel flex shrink-0 items-center gap-1 border-b border-solid px-2 pt-1.5">
-      <form name="game-object-inventory" class="flex min-w-0 flex-1 gap-0.5">
-        @for (inventoryType of inventoryTypes(); track inventoryType) {
-          <label
-            class="text-ui-muted hover:bg-ui-hover hover:text-ui-text relative inline-flex cursor-pointer items-center gap-1 rounded-t-md border border-b-0 border-solid border-transparent px-2.5 py-1.25 text-[12px] whitespace-nowrap transition-[background,color] select-none [&_input[type=radio]]:hidden"
-            [class.bg-ui-elevated!]="selectTab() === inventoryType"
-            [class.text-ui-accent!]="selectTab() === inventoryType"
-            [class.border-ui-border-panel!]="selectTab() === inventoryType"
-            [class.after:absolute]="selectTab() === inventoryType"
-            [class.after:-bottom-px]="selectTab() === inventoryType"
-            [class.after:inset-x-0]="selectTab() === inventoryType"
-            [class.after:h-px]="selectTab() === inventoryType"
-            [class.after:bg-ui-elevated]="selectTab() === inventoryType"
-            [class.after:content-['']]="selectTab() === inventoryType"
-          >
-            <input
-              name="tab"
-              type="radio"
-              value="{{ inventoryType }}"
-              [ngModel]="selectTab()"
-              (ngModelChange)="selectTab.set($event)"
-            />
-            <span>{{ getTabTitle(inventoryType) }}</span>
-            <span
-              class="text-ui-accent bg-ui-accent-bg inline-flex h-4 min-w-4.5 items-center justify-center rounded-lg px-1 text-[10px] font-bold"
-              >{{ getInventory(inventoryType).length }}</span
+@if (!isRoundView()) {
+  <!--
+    With the panel's box off there is nothing behind the rows but the map, so the content
+    carries a ground of its own rather than reading as text scattered over the table.
+  -->
+  <div
+    class="text-ui-text flex h-full flex-col overflow-hidden text-[13px]"
+    [ngClass]="isGhost() ? 'rounded-ui shadow-ui-md bg-ui-ghost [backdrop-filter:blur(6px)]' : 'bg-ui-panel'"
+    #contentRoot
+  >
+    @if (shows('tabs')) {
+      <div
+        class="bg-ui-panel border-ui-border-panel flex shrink-0 items-center gap-1 border-b border-solid px-2 pt-1.5"
+        [class.bg-transparent!]="isGhost()"
+      >
+        <form name="game-object-inventory" class="flex min-w-0 flex-1 gap-0.5">
+          @for (inventoryType of inventoryTypes(); track inventoryType) {
+            <label
+              class="text-ui-muted hover:bg-ui-hover hover:text-ui-text relative inline-flex cursor-pointer items-center gap-1 rounded-t-md border border-b-0 border-solid border-transparent px-2.5 py-1.25 text-[12px] whitespace-nowrap transition-[background,color] select-none [&_input[type=radio]]:hidden"
+              [class.bg-ui-elevated!]="selectTab() === inventoryType"
+              [class.text-ui-accent!]="selectTab() === inventoryType"
+              [class.border-ui-border-panel!]="selectTab() === inventoryType"
+              [class.after:absolute]="selectTab() === inventoryType"
+              [class.after:-bottom-px]="selectTab() === inventoryType"
+              [class.after:inset-x-0]="selectTab() === inventoryType"
+              [class.after:h-px]="selectTab() === inventoryType"
+              [class.after:bg-ui-elevated]="selectTab() === inventoryType"
+              [class.after:content-['']]="selectTab() === inventoryType"
             >
-          </label>
-        }
-      </form>
+              <input
+                name="tab"
+                type="radio"
+                value="{{ inventoryType }}"
+                [ngModel]="selectTab()"
+                (ngModelChange)="selectTab.set($event)"
+              />
+              <span>{{ getTabTitle(inventoryType) }}</span>
+              <span
+                class="text-ui-accent bg-ui-accent-bg inline-flex h-4 min-w-4.5 items-center justify-center rounded-lg px-1 text-[10px] font-bold"
+                >{{ getInventory(inventoryType).length }}</span
+              >
+            </label>
+          }
+        </form>
 
-      <div class="flex gap-1 pb-1">
-        @if (!isMultiMove()) {
+        <div class="flex shrink-0 gap-1 pb-1">
+          @if (foldersApply() && canEdit()) {
+            <button
+              class="border-ui-border-panel text-ui-muted hover:bg-ui-accent-bg hover:text-ui-accent hover:border-ui-accent rounded-ui-sm inline-flex size-7 cursor-pointer items-center justify-center border border-solid bg-transparent p-0 transition-[background,color,border-color] [&_.material-icons]:text-base!"
+              type="button"
+              [title]="'feature.inventory.panel.newFolder' | transloco"
+              (click)="createFolder()"
+            >
+              <i class="material-icons">create_new_folder</i>
+            </button>
+          }
+          @if (!isMultiMove()) {
+            <button
+              class="border-ui-border-panel text-ui-muted hover:bg-ui-accent-bg hover:text-ui-accent hover:border-ui-accent rounded-ui-sm inline-flex size-7 cursor-pointer items-center justify-center border border-solid bg-transparent p-0 transition-[background,color,border-color] [&_.material-icons]:text-base!"
+              type="button"
+              [title]="'feature.inventory.panel.multiMove' | transloco"
+              (click)="toggleMultiMove()"
+            >
+              <i class="material-icons">open_with</i>
+            </button>
+          }
           <button
             class="border-ui-border-panel text-ui-muted hover:bg-ui-accent-bg hover:text-ui-accent hover:border-ui-accent rounded-ui-sm inline-flex size-7 cursor-pointer items-center justify-center border border-solid bg-transparent p-0 transition-[background,color,border-color] [&_.material-icons]:text-base!"
+            [class.bg-ui-accent-bg!]="isEdit()"
+            [class.text-ui-accent!]="isEdit()"
+            [class.border-ui-accent!]="isEdit()"
             type="button"
-            [title]="'feature.inventory.panel.multiMove' | transloco"
-            (click)="toggleMultiMove()"
+            [title]="'feature.inventory.panel.displaySettings' | transloco"
+            (click)="toggleEdit()"
           >
-            <i class="material-icons">open_with</i>
+            <i class="material-icons">tune</i>
           </button>
-        }
-        <button
-          class="border-ui-border-panel text-ui-muted hover:bg-ui-accent-bg hover:text-ui-accent hover:border-ui-accent rounded-ui-sm inline-flex size-7 cursor-pointer items-center justify-center border border-solid bg-transparent p-0 transition-[background,color,border-color] [&_.material-icons]:text-base!"
-          [class.bg-ui-accent-bg!]="isEdit()"
-          [class.text-ui-accent!]="isEdit()"
-          [class.border-ui-accent!]="isEdit()"
-          type="button"
-          [title]="'feature.inventory.panel.displaySettings' | transloco"
-          (click)="toggleEdit()"
-        >
-          <i class="material-icons">tune</i>
-        </button>
-      </div>
-    </div>
-
-    @if (isEdit()) {
-      <div
-        class="bg-ui-elevated border-ui-border-panel flex shrink-0 flex-col gap-1.5 border-b border-solid px-2.5 py-2"
-      >
-        <div class="flex gap-2.5">
-          <div class="flex min-w-0 flex-1 flex-col gap-0.75">
-            <label class="text-ui-muted text-[10px] font-semibold tracking-wider uppercase">{{
-              'feature.inventory.panel.sortOrder1' | transloco
-            }}</label>
-            <div class="flex gap-1">
-              <input
-                class="bg-ui-input border-ui-border-panel text-ui-text rounded-ui-sm focus:border-ui-accent box-border min-w-0 flex-1 border border-solid px-1.75 py-1 text-[12px] transition-[border-color] outline-none"
-                name="sort-tag"
-                [(ngModel)]="sortTag"
-                [placeholder]="'feature.inventory.panel.tagPlaceholder' | transloco"
-              />
-              <select
-                class="bg-ui-input border-ui-border-panel text-ui-text rounded-ui-sm cursor-pointer border border-solid px-1.5 py-1 text-[12px] outline-none"
-                name="sort-order"
-                [(ngModel)]="sortOrder"
-              >
-                <option value="ASC">{{ 'feature.inventory.panel.asc' | transloco }}</option>
-                <option value="DESC">{{ 'feature.inventory.panel.desc' | transloco }}</option>
-              </select>
-            </div>
-          </div>
-          <div class="flex min-w-0 flex-1 flex-col gap-0.75">
-            <label class="text-ui-muted text-[10px] font-semibold tracking-wider uppercase">{{
-              'feature.inventory.panel.sortOrder2' | transloco
-            }}</label>
-            <div class="flex gap-1">
-              <input
-                class="bg-ui-input border-ui-border-panel text-ui-text rounded-ui-sm focus:border-ui-accent box-border min-w-0 flex-1 border border-solid px-1.75 py-1 text-[12px] transition-[border-color] outline-none"
-                name="sort-tag-2nd"
-                [(ngModel)]="sortTag2nd"
-                [placeholder]="'feature.inventory.panel.tagPlaceholder' | transloco"
-              />
-              <select
-                class="bg-ui-input border-ui-border-panel text-ui-text rounded-ui-sm cursor-pointer border border-solid px-1.5 py-1 text-[12px] outline-none"
-                name="sort-order-2nd"
-                [(ngModel)]="sortOrder2nd"
-              >
-                <option value="ASC">{{ 'feature.inventory.panel.asc' | transloco }}</option>
-                <option value="DESC">{{ 'feature.inventory.panel.desc' | transloco }}</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="flex min-w-0 flex-1 flex-col gap-0.75">
-          <label class="text-ui-muted text-[10px] font-semibold tracking-wider uppercase">{{
-            'feature.inventory.panel.displayItems' | transloco
-          }}</label>
-          <input
-            class="bg-ui-input border-ui-border-panel text-ui-text rounded-ui-sm focus:border-ui-accent box-border w-full min-w-0 flex-1 border border-solid px-1.75 py-1 text-[12px] transition-[border-color] outline-none"
-            name="data-tag"
-            [(ngModel)]="dataTag"
-            [placeholder]="'feature.inventory.panel.dataTagPlaceholder' | transloco"
-          />
-        </div>
-        <div class="flex flex-wrap gap-1.5">
-          @if (sortTag) {
-            <span
-              class="text-ui-accent bg-ui-accent-bg rounded-ui-sm inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] [&_.material-icons]:text-[12px]!"
-              ><i class="material-icons">sort</i>{{ sortTag }} ({{ sortOrderName }})</span
-            >
-          }
-          @if (sortTag2nd) {
-            <span
-              class="text-ui-accent bg-ui-accent-bg rounded-ui-sm inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] [&_.material-icons]:text-[12px]!"
-              ><i class="material-icons">sort</i>{{ sortTag2nd }} ({{ sortOrderName2nd }})</span
-            >
-          }
         </div>
       </div>
     }
 
-    @if (!isEdit() && sortTag) {
-      <div class="bg-ui-panel border-ui-border-panel flex shrink-0 flex-wrap gap-1.5 border-b border-solid px-2.5 py-1">
-        <span
-          class="text-ui-accent bg-ui-accent-bg rounded-ui-sm inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] [&_.material-icons]:text-[12px]!"
-          ><i class="material-icons">sort</i>{{ sortTag }} ({{ sortOrderName }})</span
+    @if (shows('filter')) {
+      <div
+        class="bg-ui-panel border-ui-border-panel flex shrink-0 items-center gap-1.5 border-b border-solid px-2.5 py-1"
+        [class.bg-transparent!]="isGhost()"
+      >
+        <button
+          class="text-ui-muted hover:text-ui-accent flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-none bg-transparent p-0 text-left text-[11px] hover:shadow-none"
+          type="button"
+          [title]="'feature.inventory.panel.filterSettings' | transloco"
+          (click)="toggleEdit()"
         >
-        @if (sortTag2nd) {
-          <span
-            class="text-ui-accent bg-ui-accent-bg rounded-ui-sm inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] [&_.material-icons]:text-[12px]!"
-            ><i class="material-icons">sort</i>{{ sortTag2nd }} ({{ sortOrderName2nd }})</span
+          <i class="material-icons text-[15px]!">filter_alt</i>
+          <span class="truncate">{{ filterSummary() }}</span>
+        </button>
+        @if (hasQuery() || isHiddenFiltered()) {
+          <span class="text-ui-dim shrink-0 text-[11px] whitespace-nowrap"
+            >{{ filteredRows().length }} / {{ visibleRows().length }}</span
           >
         }
       </div>
     }
 
     @if (isMultiMove()) {
-      <div
-        class="bg-ui-accent-bg border-ui-border-panel flex shrink-0 flex-wrap items-center gap-1.5 border-b border-solid px-2.5 py-1.5"
-      >
-        <span
-          class="text-ui-accent flex flex-1 items-center gap-1 text-[12px] font-semibold [&_.material-icons]:text-[15px]!"
-        >
-          <i class="material-icons">open_with</i>{{ 'feature.inventory.panel.multiMove' | transloco }}
-        </span>
-        <button
-          class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover rounded-ui-sm inline-flex cursor-pointer items-center gap-0.75 border border-solid px-2 py-1 text-[12px] transition-[background] [&_.material-icons]:text-[14px]!"
-          type="button"
-          (click)="allTabBoxCheck()"
-        >
-          {{
-            existsMultiMoveSelectedInTab()
-              ? ('feature.inventory.panel.deselectAll' | transloco)
-              : ('feature.inventory.panel.selectAll' | transloco)
-          }}
-        </button>
-        <span class="text-ui-muted text-[11px] whitespace-nowrap">{{
-          'feature.inventory.panel.moveTargetLabel' | transloco
-        }}</span>
-        @for (loc of multiMoveLocations; track loc.name) {
+      @let picked = multiMoveTargets().size;
+      <div class="bg-ui-accent-bg border-ui-border-panel shrink-0 border-b border-solid px-2.5 py-1.5">
+        <div class="flex items-center gap-2">
+          <span class="text-ui-accent flex items-center gap-1 text-[12px] font-semibold">
+            <i class="material-icons text-[15px]!">open_with</i>{{ 'feature.inventory.panel.multiMove' | transloco }}
+          </span>
+          <span class="text-ui-muted text-[11px] whitespace-nowrap">{{
+            'feature.inventory.panel.selectedCount' | transloco: { count: picked }
+          }}</span>
+          <span class="flex-1"></span>
           <button
-            class="bg-ui-accent-bg border-ui-accent text-ui-accent hover:bg-ui-accent rounded-ui-sm inline-flex cursor-pointer items-center gap-0.75 border border-solid px-2 py-1 text-[12px] transition-[background,color] hover:text-white [&_.material-icons]:text-[14px]!"
+            class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover rounded-ui-sm h-6.5 shrink-0 cursor-pointer border border-solid px-2 text-[11px] transition-[background]"
             type="button"
-            (click)="moveToAndClose(loc.name)"
+            (click)="allTabBoxCheck()"
           >
-            <i class="material-icons">arrow_forward</i>{{ loc.labelKey | transloco }}
-          </button>
-        }
-        @if (selectTab() === 'graveyard') {
-          <button
-            class="border-ui-danger text-ui-danger hover:bg-ui-danger rounded-ui-sm inline-flex cursor-pointer items-center gap-0.75 border border-solid bg-transparent px-2 py-1 text-[12px] transition-[background,color] hover:text-white [&_.material-icons]:text-[14px]!"
-            type="button"
-            (click)="deleteAndClose()"
-          >
-            <i class="material-icons">delete</i>{{ 'feature.inventory.panel.delete' | transloco }}
-          </button>
-        }
-        @if (selectTab() === 'table') {
-          <button
-            class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover hover:border-ui-accent hover:text-ui-accent rounded-ui-sm inline-flex cursor-pointer items-center gap-0.75 border border-solid px-2 py-1 text-[12px] transition-[background,color,border-color] [&_.material-icons]:text-[14px]!"
-            type="button"
-            (click)="multiSetHideInventory(true)"
-          >
-            <i class="material-icons">visibility_off</i>{{ 'feature.inventory.panel.hideInInventory' | transloco }}
+            {{
+              existsMultiMoveSelectedInTab()
+                ? ('feature.inventory.panel.deselectAll' | transloco)
+                : ('feature.inventory.panel.selectAll' | transloco)
+            }}
           </button>
           <button
-            class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover hover:border-ui-accent hover:text-ui-accent rounded-ui-sm inline-flex cursor-pointer items-center gap-0.75 border border-solid px-2 py-1 text-[12px] transition-[background,color,border-color] [&_.material-icons]:text-[14px]!"
+            class="text-ui-muted hover:bg-ui-hover hover:text-ui-text flex size-6.5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 [&_.material-icons]:text-[16px]!"
             type="button"
-            (click)="multiSetHideInventory(false)"
+            [attr.aria-label]="'feature.inventory.panel.cancel' | transloco"
+            [title]="'feature.inventory.panel.cancel' | transloco"
+            (click)="toggleMultiMove()"
           >
-            <i class="material-icons">visibility</i>{{ 'feature.inventory.panel.showInInventory' | transloco }}
+            <i class="material-icons" aria-hidden="true">close</i>
           </button>
-        }
-        <button
-          class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover rounded-ui-sm inline-flex cursor-pointer items-center gap-0.75 border border-solid px-2 py-1 text-[12px] transition-[background] [&_.material-icons]:text-[14px]!"
-          type="button"
-          (click)="toggleMultiMove()"
-        >
-          <i class="material-icons">close</i>{{ 'feature.inventory.panel.cancel' | transloco }}
-        </button>
+        </div>
+
+        <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span class="text-ui-muted shrink-0 text-[10px] font-semibold tracking-wider uppercase">{{
+            'feature.inventory.panel.moveTargetLabel' | transloco
+          }}</span>
+          <div class="flex flex-wrap items-center gap-1">
+            @for (loc of multiMoveLocations; track loc.name) {
+              <button
+                class="bg-ui-accent-bg border-ui-accent text-ui-accent hover:bg-ui-accent rounded-ui-sm h-6.5 cursor-pointer border border-solid px-2 text-[11px] transition-[background,color] hover:text-white disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-inherit"
+                type="button"
+                [disabled]="picked < 1"
+                (click)="moveToAndClose(loc.name)"
+              >
+                {{ loc.labelKey | transloco }}
+              </button>
+            }
+            @if (foldersApply()) {
+              <button
+                class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover hover:border-ui-accent hover:text-ui-accent rounded-ui-sm inline-flex h-6.5 cursor-pointer items-center gap-0.75 border border-solid px-2 text-[11px] transition-[background,color,border-color] disabled:cursor-default disabled:opacity-40 [&_.material-icons]:text-[14px]!"
+                type="button"
+                [disabled]="picked < 1"
+                (click)="onMultiMoveFolderMenu()"
+              >
+                <i class="material-icons">folder</i>{{ 'feature.inventory.panel.folder' | transloco }}
+              </button>
+            }
+          </div>
+
+          @if (selectTab() === 'table') {
+            <span class="bg-ui-border-panel h-4 w-px shrink-0"></span>
+            <span class="text-ui-muted shrink-0 text-[10px] font-semibold tracking-wider uppercase">{{
+              'feature.inventory.panel.inventoryVisibility' | transloco
+            }}</span>
+            <div class="flex items-center gap-1">
+              <button
+                class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover hover:border-ui-accent hover:text-ui-accent rounded-ui-sm flex size-6.5 cursor-pointer items-center justify-center border border-solid p-0 transition-[background,color,border-color] disabled:cursor-default disabled:opacity-40 [&_.material-icons]:text-[15px]!"
+                type="button"
+                [disabled]="picked < 1"
+                [attr.aria-label]="'feature.inventory.panel.hideInInventory' | transloco"
+                [title]="'feature.inventory.panel.hideInInventory' | transloco"
+                (click)="multiSetHideInventory(true)"
+              >
+                <i class="material-icons" aria-hidden="true">visibility_off</i>
+              </button>
+              <button
+                class="bg-ui-input border-ui-border-panel text-ui-text hover:bg-ui-hover hover:border-ui-accent hover:text-ui-accent rounded-ui-sm flex size-6.5 cursor-pointer items-center justify-center border border-solid p-0 transition-[background,color,border-color] disabled:cursor-default disabled:opacity-40 [&_.material-icons]:text-[15px]!"
+                type="button"
+                [disabled]="picked < 1"
+                [attr.aria-label]="'feature.inventory.panel.showInInventory' | transloco"
+                [title]="'feature.inventory.panel.showInInventory' | transloco"
+                (click)="multiSetHideInventory(false)"
+              >
+                <i class="material-icons" aria-hidden="true">visibility</i>
+              </button>
+            </div>
+          }
+
+          @if (selectTab() === 'graveyard') {
+            <span class="bg-ui-border-panel h-4 w-px shrink-0"></span>
+            <button
+              class="border-ui-danger text-ui-danger hover:bg-ui-danger rounded-ui-sm inline-flex h-6.5 cursor-pointer items-center gap-0.75 border border-solid bg-transparent px-2 text-[11px] transition-[background,color] hover:text-white disabled:cursor-default disabled:opacity-40 [&_.material-icons]:text-[14px]!"
+              type="button"
+              [disabled]="picked < 1"
+              (click)="deleteAndClose()"
+            >
+              <i class="material-icons">delete</i>{{ 'feature.inventory.panel.delete' | transloco }}
+            </button>
+          }
+        </div>
       </div>
     }
 
-    @if (selectTab() === 'table') {
+    @if (selectTab() === 'table' && shows('round') && (canEdit() || turnRound() > 0)) {
       <div
         class="bg-ui-panel border-ui-border-panel flex shrink-0 items-center gap-1.5 border-b border-solid px-2.5 py-1.5"
+        [class.bg-transparent!]="isGhost()"
       >
         @if (turnRound() > 0) {
           <span class="text-ui-muted shrink-0 text-[11px] font-semibold">{{
             'feature.turnOrder.round' | transloco: { n: turnRound() }
           }}</span>
         }
-        <button
-          type="button"
-          class="rounded-ui-sm text-ui-text border-ui-border-panel hover:border-ui-accent hover:bg-ui-hover flex flex-1 cursor-pointer items-center justify-center gap-0.5 border border-solid bg-transparent px-2 py-1 text-[12px] font-semibold transition-colors hover:shadow-none [&_.material-icons]:text-[15px]!"
-          (click)="turnPrev()"
-        >
-          <i class="material-icons">chevron_left</i>{{ 'feature.turnOrder.prev' | transloco }}
-        </button>
-        <button
-          type="button"
-          class="rounded-ui-sm bg-ui-accent flex flex-1 cursor-pointer items-center justify-center gap-0.5 border-none px-2 py-1 text-[12px] font-semibold text-white transition-opacity hover:border-transparent hover:text-white hover:opacity-85 hover:shadow-none [&_.material-icons]:text-[15px]!"
-          (click)="turnNext()"
-        >
-          {{ 'feature.turnOrder.next' | transloco }}<i class="material-icons">chevron_right</i>
-        </button>
-        <button
-          type="button"
-          class="hover:bg-ui-hover flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] hover:shadow-none [&_.material-icons]:text-[15px]!"
-          [class.text-ui-accent]="buffDecay()"
-          [class.text-ui-dim]="!buffDecay()"
-          [title]="(buffDecay() ? 'feature.turnOrder.buffDecayOn' : 'feature.turnOrder.buffDecayOff') | transloco"
-          (click)="toggleBuffDecay()"
-        >
-          <i class="material-icons">hourglass_bottom</i>
-        </button>
-        <button
-          type="button"
-          class="text-ui-muted hover:bg-ui-hover hover:text-ui-text flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[15px]!"
-          [disabled]="turnRound() === 0"
-          [title]="'feature.turnOrder.reset' | transloco"
-          (click)="turnReset()"
-        >
-          <i class="material-icons">restart_alt</i>
-        </button>
+        @if (canEdit()) {
+          <button
+            type="button"
+            class="rounded-ui-sm text-ui-text border-ui-border-panel hover:border-ui-accent hover:bg-ui-hover ml-auto flex max-w-40 flex-1 cursor-pointer items-center justify-center gap-0.5 border border-solid bg-transparent px-2 py-1 text-[12px] font-semibold transition-colors hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[15px]!"
+            [disabled]="!canUndoTurn()"
+            [title]="'feature.turnOrder.undo' | transloco"
+            (click)="turnPrev()"
+          >
+            <i class="material-icons">chevron_left</i>{{ 'feature.turnOrder.prev' | transloco }}
+          </button>
+          <button
+            type="button"
+            class="rounded-ui-sm bg-ui-accent flex max-w-40 flex-1 cursor-pointer items-center justify-center gap-0.5 border-none px-2 py-1 text-[12px] font-semibold text-white transition-opacity hover:border-transparent hover:text-white hover:opacity-85 hover:shadow-none [&_.material-icons]:text-[15px]!"
+            (click)="turnNext()"
+          >
+            {{ 'feature.turnOrder.next' | transloco }}<i class="material-icons">chevron_right</i>
+          </button>
+          <button
+            type="button"
+            class="rounded-ui-sm text-ui-muted border-ui-border-panel hover:border-ui-accent hover:bg-ui-hover hover:text-ui-accent flex size-7 shrink-0 cursor-pointer items-center justify-center border border-solid bg-transparent p-0 transition-colors hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[15px]!"
+            [disabled]="!canUndoTurn()"
+            [title]="'feature.turnOrder.retreatRound' | transloco"
+            (click)="turnRetreatRound()"
+          >
+            <i class="material-icons">fast_rewind</i>
+          </button>
+          <button
+            type="button"
+            class="rounded-ui-sm text-ui-muted border-ui-border-panel hover:border-ui-accent hover:bg-ui-hover hover:text-ui-accent flex size-7 shrink-0 cursor-pointer items-center justify-center border border-solid bg-transparent p-0 transition-colors hover:shadow-none [&_.material-icons]:text-[15px]!"
+            [title]="'feature.turnOrder.advanceRound' | transloco"
+            (click)="turnAdvanceRound()"
+          >
+            <i class="material-icons">fast_forward</i>
+          </button>
+          <button
+            type="button"
+            class="hover:bg-ui-hover flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] hover:shadow-none [&_.material-icons]:text-[15px]!"
+            [class.text-ui-accent]="buffDecay()"
+            [class.text-ui-dim]="!buffDecay()"
+            [title]="(buffDecay() ? 'feature.turnOrder.buffDecayOn' : 'feature.turnOrder.buffDecayOff') | transloco"
+            (click)="toggleBuffDecay()"
+          >
+            <i class="material-icons">hourglass_bottom</i>
+          </button>
+          <button
+            type="button"
+            class="text-ui-muted hover:bg-ui-hover hover:text-ui-text flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[15px]!"
+            [disabled]="turnRound() === 0"
+            [title]="'feature.turnOrder.reset' | transloco"
+            (click)="turnReset()"
+          >
+            <i class="material-icons">restart_alt</i>
+          </button>
+        }
       </div>
     }
 
-    <div class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 py-1">
-      @if (objects.length < 1) {
-        <div
-          class="text-ui-dim flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center [&_.material-icons]:text-[36px]! [&_.material-icons]:opacity-40"
-        >
-          <i class="material-icons">inbox</i>
-          <p class="m-0 text-[12px]">
-            {{ 'feature.inventory.panel.emptyMessage' | transloco: { name: getTabTitle(selectTab()) } }}
-          </p>
-        </div>
-      }
-
-      @for (gameObject of objects; track gameObject.identifier) {
-        <div
-          data-testid="inventory-item"
-          class="hover:bg-ui-hover group relative flex cursor-pointer items-center gap-2 rounded-[5px] border border-solid border-transparent px-2 py-1.25 transition-[background,border-color] select-none [-moz-user-drag:none] [-webkit-user-drag:none]"
-          [class.bg-ui-accent-bg!]="selectedIdentifier() === gameObject.identifier"
-          [class.border-ui-accent!]="selectedIdentifier() === gameObject.identifier"
-          [class.opacity-50]="isInventoryHiddenObject(gameObject)"
-          [class.italic]="isInventoryHiddenObject(gameObject)"
-          [class.border-dashed!]="isInventoryHiddenObject(gameObject)"
-          [class.border-ui-border-panel!]="
-            isInventoryHiddenObject(gameObject) && selectedIdentifier() !== gameObject.identifier
-          "
-          (contextmenu)="onContextMenu($event, gameObject)"
-          (click)="selectGameObject(gameObject)"
-          (dblclick)="focusToObject($event, gameObject)"
-          (pointerdown)="onObjectPointerDown($event, gameObject)"
-          (pointermove)="onObjectPointerMove($event)"
-          (pointerup)="onObjectPointerUp($event)"
-          (mousedown)="onObjectDragBlock($event, gameObject)"
-          (touchstart)="onObjectDragBlock($event, gameObject)"
-        >
-          @if (selectTab() === 'table') {
-            <i
-              class="material-icons text-ui-accent w-3.5 shrink-0 text-[16px]!"
-              [class.invisible]="currentTurnId() !== gameObject.identifier"
-              >play_arrow</i
-            >
-          }
-          @if (isMultiMove()) {
-            <input
-              class="size-3.5 shrink-0 cursor-pointer [accent-color:var(--ui-accent)]"
-              type="checkbox"
-              [checked]="multiMoveTargets().has(gameObject.identifier)"
-              (change)="toggleMultiMoveTarget($event, $any(gameObject))"
-            />
-          }
-
+    @if (isTableView()) {
+      <ng-container *ngTemplateOutlet="castTable"></ng-container>
+    } @else {
+      <div class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 py-1">
+        @let nothingListed = filteredRows().length < 1;
+        @if (nothingListed && (hasQuery() || !showTree())) {
           <div
-            class="bg-ui-input border-ui-border-panel flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-solid"
+            class="text-ui-dim flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center [&_.material-icons]:text-[36px]! [&_.material-icons]:opacity-40"
           >
-            @if (gameObject.imageFile.url) {
-              <img
-                class="size-full object-cover object-top"
-                [src]="gameObject.imageFile.url | safe: 'resourceUrl'"
-                draggable="false"
-                alt=""
-              />
-            } @else {
-              <i class="material-icons text-ui-dim text-[20px]! opacity-50">person</i>
-            }
-          </div>
-
-          <div class="flex min-w-0 flex-1 flex-col gap-0.75">
-            <div
-              class="text-ui-text flex items-center gap-1 truncate text-[13px] font-semibold"
-              [class.text-ui-accent!]="selectedIdentifier() === gameObject.identifier"
-            >
-              <span class="truncate">{{ gameObject.name }}</span>
-              @if (!canView(gameObject)) {
-                <i class="material-icons text-ui-dim shrink-0 text-[13px]!">lock</i>
+            <i class="material-icons">{{ hasQuery() ? 'search_off' : 'inbox' }}</i>
+            <p class="m-0 text-[12px]">
+              @if (hasQuery()) {
+                {{ 'feature.inventory.panel.noMatch' | transloco }}
+              } @else {
+                {{ 'feature.inventory.panel.emptyMessage' | transloco: { name: getTabTitle(selectTab()) } }}
               }
-            </div>
-            @if (gameObject.rootDataElement && canView(gameObject)) {
-              <div class="grid w-full grid-cols-2 items-start gap-x-2 gap-y-0.75">
-                @for (dataElm of getInventoryTags($any(gameObject)); track dataElm?.identifier ?? $index) {
-                  <ng-container *ngTemplateOutlet="dataElmTag; context: { dataElm: dataElm }"></ng-container>
+            </p>
+          </div>
+        } @else if (showTree()) {
+          @for (node of folderTree().roots; track node.path) {
+            <ng-container *ngTemplateOutlet="folderNode; context: { $implicit: node }"></ng-container>
+          }
+          @if (folderTree().loose.length > 0) {
+            <ng-container
+              *ngTemplateOutlet="
+                folderHeading;
+                context: { $implicit: { path: '', name: '', totalCount: folderTree().loose.length } }
+              "
+            ></ng-container>
+            @if (!isFolderCollapsed('')) {
+              <div class="border-ui-border-panel ml-2.5 flex flex-col gap-0.5 border-l border-solid pl-1.5">
+                @for (row of folderTree().loose; track row.identifier) {
+                  <ng-container *ngTemplateOutlet="itemRow; context: { $implicit: row.object }"></ng-container>
                 }
               </div>
             }
-          </div>
-
-          <button
-            class="text-ui-muted hover:bg-ui-hover hover:text-ui-accent hidden size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] group-hover:inline-flex [&_.material-icons]:text-base!"
-            [class.inline-flex!]="selectedIdentifier() === gameObject.identifier"
-            type="button"
-            [title]="'feature.turnOrder.setCurrent' | transloco"
-            (click)="setTurnOrder($event, gameObject)"
-          >
-            <i class="material-icons">flag</i>
-          </button>
-
-          <button
-            class="text-ui-muted hover:bg-ui-hover hover:text-ui-text hidden size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background] group-hover:inline-flex [&_.material-icons]:text-base!"
-            [class.inline-flex!]="selectedIdentifier() === gameObject.identifier"
-            type="button"
-            [title]="'feature.inventory.panel.menu' | transloco"
-            (click)="onContextMenu($event, gameObject)"
-          >
-            <i class="material-icons">more_vert</i>
-          </button>
-        </div>
-      }
-    </div>
+          }
+        } @else if (sideBands(); as bands) {
+          @for (band of bands; track band.side) {
+            <ng-container *ngTemplateOutlet="sideHeading; context: { $implicit: band }"></ng-container>
+            @for (row of band.rows; track row.identifier) {
+              <ng-container *ngTemplateOutlet="itemRow; context: { $implicit: row.object }"></ng-container>
+            }
+          }
+        } @else {
+          @for (row of filteredRows(); track row.identifier) {
+            <ng-container *ngTemplateOutlet="itemRow; context: { $implicit: row.object }"></ng-container>
+          }
+        }
+      </div>
+    }
 
     @if (selectTab() === 'graveyard') {
-      <div class="bg-ui-panel border-ui-border-panel shrink-0 border-t border-solid px-2.5 py-2">
+      <div
+        class="bg-ui-panel border-ui-border-panel shrink-0 border-t border-solid px-2.5 py-2"
+        [class.bg-transparent!]="isGhost()"
+      >
         <button
           class="text-ui-danger border-ui-danger hover:bg-ui-danger-bg rounded-ui-sm inline-flex cursor-pointer items-center gap-1 border border-solid bg-transparent px-3 py-1.25 text-[12px] font-semibold transition-[background] disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[15px]!"
           type="button"
           (click)="cleanInventory()"
-          [disabled]="objects.length < 1"
+          [disabled]="filteredRows().length < 1"
         >
           <i class="material-icons">delete_sweep</i>{{ 'feature.inventory.panel.cleanGraveyard' | transloco }}
         </button>
@@ -388,83 +348,349 @@
           'feature.turnOrder.round' | transloco: { n: turnRound() }
         }}</span>
       }
-      <div class="flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1">
-        <div class="flex items-center gap-1.5">
-          <button
-            type="button"
-            class="bg-ui-panel/80 text-ui-text border-ui-border-panel hover:border-ui-accent hover:text-ui-accent shadow-ui-sm flex size-8 cursor-pointer items-center justify-center rounded-full border border-solid backdrop-blur-sm transition-colors hover:shadow-none [&_.material-icons]:text-[18px]!"
-            [title]="'feature.turnOrder.prev' | transloco"
-            (click)="turnPrev()"
-          >
-            <i class="material-icons">keyboard_arrow_up</i>
-          </button>
-          <button
-            type="button"
-            class="bg-ui-accent shadow-ui-sm flex size-8 cursor-pointer items-center justify-center rounded-full border-none text-white transition-opacity hover:opacity-85 hover:shadow-none [&_.material-icons]:text-[18px]!"
-            [title]="'feature.turnOrder.next' | transloco"
-            (click)="turnNext()"
-          >
-            <i class="material-icons">keyboard_arrow_down</i>
-          </button>
+      @if (canEdit()) {
+        <div class="flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1">
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              class="bg-ui-panel/80 text-ui-text border-ui-border-panel hover:border-ui-accent hover:text-ui-accent shadow-ui-sm flex size-8 cursor-pointer items-center justify-center rounded-full border border-solid backdrop-blur-sm transition-colors hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[18px]!"
+              [disabled]="!canUndoTurn()"
+              [title]="'feature.turnOrder.undo' | transloco"
+              (click)="turnPrev()"
+            >
+              <i class="material-icons">keyboard_arrow_up</i>
+            </button>
+            <button
+              type="button"
+              class="bg-ui-accent shadow-ui-sm flex size-8 cursor-pointer items-center justify-center rounded-full border-none text-white transition-opacity hover:opacity-85 hover:shadow-none [&_.material-icons]:text-[18px]!"
+              [title]="'feature.turnOrder.next' | transloco"
+              (click)="turnNext()"
+            >
+              <i class="material-icons">keyboard_arrow_down</i>
+            </button>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              class="text-ui-muted hover:bg-ui-hover hover:text-ui-text flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-transparent p-0 drop-shadow-sm transition-[background,color] hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[17px]!"
+              [disabled]="!canUndoTurn()"
+              [title]="'feature.turnOrder.retreatRound' | transloco"
+              (click)="turnRetreatRound()"
+            >
+              <i class="material-icons">fast_rewind</i>
+            </button>
+            <button
+              type="button"
+              class="text-ui-muted hover:bg-ui-hover hover:text-ui-text flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-transparent p-0 drop-shadow-sm transition-[background,color] hover:shadow-none [&_.material-icons]:text-[17px]!"
+              [title]="'feature.turnOrder.advanceRound' | transloco"
+              (click)="turnAdvanceRound()"
+            >
+              <i class="material-icons">fast_forward</i>
+            </button>
+            <button
+              type="button"
+              class="hover:bg-ui-hover flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-transparent p-0 drop-shadow-sm transition-[background,color] hover:shadow-none [&_.material-icons]:text-[17px]!"
+              [class.text-ui-accent]="buffDecay()"
+              [class.text-ui-dim]="!buffDecay()"
+              [title]="(buffDecay() ? 'feature.turnOrder.buffDecayOn' : 'feature.turnOrder.buffDecayOff') | transloco"
+              (click)="toggleBuffDecay()"
+            >
+              <i class="material-icons">hourglass_bottom</i>
+            </button>
+            <button
+              type="button"
+              class="text-ui-muted hover:bg-ui-hover hover:text-ui-text flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-transparent p-0 drop-shadow-sm transition-[background,color] hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[17px]!"
+              [disabled]="turnRound() === 0"
+              [title]="'feature.turnOrder.reset' | transloco"
+              (click)="turnReset()"
+            >
+              <i class="material-icons">restart_alt</i>
+            </button>
+          </div>
         </div>
-        <div class="flex items-center gap-1.5">
-          <button
-            type="button"
-            class="hover:bg-ui-hover flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-transparent p-0 drop-shadow-sm transition-[background,color] hover:shadow-none [&_.material-icons]:text-[17px]!"
-            [class.text-ui-accent]="buffDecay()"
-            [class.text-ui-dim]="!buffDecay()"
-            [title]="(buffDecay() ? 'feature.turnOrder.buffDecayOn' : 'feature.turnOrder.buffDecayOff') | transloco"
-            (click)="toggleBuffDecay()"
-          >
-            <i class="material-icons">hourglass_bottom</i>
-          </button>
-          <button
-            type="button"
-            class="text-ui-muted hover:bg-ui-hover hover:text-ui-text flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-transparent p-0 drop-shadow-sm transition-[background,color] hover:shadow-none disabled:cursor-not-allowed disabled:opacity-40 [&_.material-icons]:text-[17px]!"
-            [disabled]="turnRound() === 0"
-            [title]="'feature.turnOrder.reset' | transloco"
-            (click)="turnReset()"
-          >
-            <i class="material-icons">restart_alt</i>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="flex flex-col items-center gap-2.5 p-3">
-      @for (character of turnOrderList(); track character.identifier) {
-        <button
-          type="button"
-          class="shrink-0 cursor-pointer rounded-full border-none bg-transparent p-0 transition-transform"
-          [class.scale-105]="currentTurnId() === character.identifier"
-          [class.opacity-50]="currentTurnId() && currentTurnId() !== character.identifier"
-          [title]="character.name"
-          (click)="selectTurn(character)"
-        >
-          <span
-            class="bg-ui-input border-ui-border-panel ring-ui-accent shadow-ui-sm flex size-12 items-center justify-center overflow-hidden rounded-full border border-solid transition-shadow"
-            [class.ring-2]="currentTurnId() === character.identifier"
-            [class.shadow-[0_0_8px_var(--ui-accent-glow)]]="currentTurnId() === character.identifier"
-          >
-            @if (character.imageFile.url) {
-              <img
-                class="size-full object-cover object-top"
-                [src]="character.imageFile.url | safe: 'resourceUrl'"
-                alt=""
-              />
-            } @else {
-              <i class="material-icons text-ui-dim text-[26px]! opacity-50">person</i>
-            }
-          </span>
-        </button>
-      } @empty {
-        <span class="text-ui-dim px-1 py-2 text-center text-[11px] drop-shadow-sm">{{
-          'feature.turnOrder.empty' | transloco
-        }}</span>
       }
     </div>
+
+    @if (turnSides().length > 0) {
+      <div class="flex flex-col items-center gap-2 p-3">
+        @for (group of turnSides(); track group.side) {
+          <div class="flex w-full flex-col items-center gap-2">
+            <span
+              class="flex max-w-full items-center gap-1 truncate rounded-full px-2 py-0.5 text-[10px] font-semibold drop-shadow-sm"
+              [class.bg-ui-accent-bg]="currentTurnSide() === group.side"
+              [class.text-ui-accent]="currentTurnSide() === group.side"
+              [class.text-ui-dim]="currentTurnSide() !== group.side"
+              [title]="group.name"
+            >
+              <span class="size-2 shrink-0 rounded-full" [style.background]="group.color || 'var(--ui-dim)'"></span>
+              <span class="truncate">{{ group.name }}</span>
+            </span>
+            @for (character of group.members; track character.identifier) {
+              <ng-container *ngTemplateOutlet="turnPiece; context: { $implicit: character }"></ng-container>
+            }
+          </div>
+        }
+      </div>
+    } @else {
+      <div class="flex flex-col items-center gap-2.5 p-3">
+        @for (character of turnOrderList(); track character.identifier) {
+          <ng-container *ngTemplateOutlet="turnPiece; context: { $implicit: character }"></ng-container>
+        } @empty {
+          <span class="text-ui-dim px-1 py-2 text-center text-[11px] drop-shadow-sm">{{
+            'feature.turnOrder.empty' | transloco
+          }}</span>
+        }
+      </div>
+    }
+
+    <ng-template #turnPiece let-character>
+      <button
+        type="button"
+        class="relative shrink-0 rounded-full border-none bg-transparent p-0 transition-transform"
+        [class.cursor-pointer]="canEdit()"
+        [class.scale-105]="currentTurnId() === character.identifier"
+        [class.opacity-50]="currentTurnId() && currentTurnId() !== character.identifier"
+        [disabled]="!canEdit()"
+        [title]="character.name"
+        (click)="selectTurn(character)"
+      >
+        <span
+          class="bg-ui-input border-ui-border-panel ring-ui-accent shadow-ui-sm flex size-12 items-center justify-center overflow-hidden rounded-full border border-solid transition-shadow"
+          [class.ring-2]="currentTurnId() === character.identifier"
+          [class.shadow-[0_0_8px_var(--ui-accent-glow)]]="currentTurnId() === character.identifier"
+        >
+          @if (character.imageFile.url) {
+            <img
+              class="size-full object-cover object-top"
+              [src]="character.imageFile.url | safe: 'resourceUrl'"
+              alt=""
+            />
+          } @else {
+            <i class="material-icons text-ui-dim text-[26px]! opacity-50">person</i>
+          }
+        </span>
+        @if (actedIds().has(character.identifier) && currentTurnId() !== character.identifier) {
+          <i
+            class="material-icons bg-ui-panel text-ui-dim absolute right-0 bottom-0 rounded-full text-[14px]!"
+            [title]="'feature.turnOrder.acted' | transloco"
+            >check</i
+          >
+        }
+      </button>
+    </ng-template>
   </div>
 }
+
+<ng-template #castTable>
+  @let table = inventoryTable();
+  @if (table.columns.length < 1) {
+    <div class="text-ui-dim flex flex-1 items-center justify-center p-6 text-center text-[12px]">
+      {{ 'feature.inventory.panel.tableNoColumns' | transloco }}
+    </div>
+  } @else {
+    <div class="flex-1 overflow-auto">
+      <!--
+        A table rather than a grid a row at a time: the heading and every row have to agree on
+        where a column starts, and only one set of column widths can promise that.
+      -->
+      <table
+        class="w-max min-w-full border-separate border-spacing-0 text-[12px]"
+        [ngClass]="{ '[&_thead_th]:bg-ui-ghost-header!': isGhost() }"
+      >
+        <thead>
+          <tr class="text-ui-muted text-[10px] font-semibold">
+            @if (isMultiMove()) {
+              <th
+                class="bg-ui-elevated border-ui-border-panel sticky top-0 z-1 border-b border-solid p-1"
+                scope="col"
+              ></th>
+            }
+            <th
+              class="bg-ui-elevated border-ui-border-panel sticky top-0 z-1 border-b border-solid p-1 whitespace-nowrap"
+              scope="col"
+            >
+              {{ 'feature.inventory.panel.tableOrder' | transloco }}
+            </th>
+            <th
+              class="bg-ui-elevated border-ui-border-panel sticky top-0 z-1 border-b border-solid p-1 text-left"
+              scope="col"
+              colspan="2"
+            >
+              {{ 'feature.inventory.panel.tableName' | transloco }}
+            </th>
+            @for (column of table.columns; track column.name) {
+              <th
+                class="bg-ui-elevated border-ui-border-panel sticky top-0 z-1 border-b border-solid px-1.5 py-1 whitespace-nowrap"
+                scope="col"
+                [title]="column.name"
+              >
+                <span class="flex items-center justify-center gap-0.5">
+                  @if (column.ailment) {
+                    <span
+                      class="ring-ui-border-panel inline-flex size-3 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] ring-1"
+                      [style.background]="ailmentSwatch(column)"
+                    >
+                      @if (ailmentIconUrl(column)) {
+                        <img
+                          class="size-full object-contain"
+                          [src]="ailmentIconUrl(column) | safe: 'resourceUrl'"
+                          alt=""
+                        />
+                      } @else {
+                        {{ column.ailment.icon }}
+                      }
+                    </span>
+                  }
+                  {{ column.name }}
+                </span>
+              </th>
+            }
+          </tr>
+        </thead>
+        <tbody>
+          @let bandedRows = tableSideBands();
+          @for (band of bandedRows ?? [{ side: '', name: '', color: '', rows: table.rows }]; track band.side) {
+            @if (band.side.length > 0) {
+              <tr data-testid="inventory-table-side-heading">
+                <th
+                  class="bg-ui-elevated border-ui-border-panel border-b border-solid px-1.5 py-0.5 text-left"
+                  scope="colgroup"
+                  colspan="99"
+                >
+                  <span class="flex items-center gap-1.5">
+                    <span
+                      class="size-2 shrink-0 rounded-full"
+                      [style.background]="band.color || 'var(--ui-dim)'"
+                    ></span>
+                    <span class="text-ui-muted text-[11px] font-semibold">{{ band.name }}</span>
+                    <span class="text-ui-dim text-[10px]">{{ band.rows.length }}</span>
+                  </span>
+                </th>
+              </tr>
+            }
+            @for (row of band.rows; track row.object.identifier) {
+              <tr
+                data-testid="inventory-table-row"
+                class="hover:bg-ui-hover cursor-pointer transition-colors select-none"
+                [class.bg-ui-accent-bg!]="selectedIdentifier() === row.object.identifier"
+                [class.opacity-50]="isHiddenRowDimmed(row.object)"
+                [class.italic]="isHiddenRowDimmed(row.object)"
+                (contextmenu)="onContextMenu($event, row.object)"
+                (click)="selectGameObject(row.object)"
+                (dblclick)="focusToObject($event, row.object)"
+              >
+                @if (isMultiMove()) {
+                  <td class="border-ui-border-panel w-0 border-b border-solid px-1 py-0.5">
+                    <input
+                      class="size-3.5 cursor-pointer align-middle [accent-color:var(--ui-accent)]"
+                      type="checkbox"
+                      [checked]="multiMoveTargets().has(row.object.identifier)"
+                      (click)="$event.stopPropagation()"
+                      (change)="toggleMultiMoveTarget($event, $any(row.object))"
+                    />
+                  </td>
+                }
+                <td class="border-ui-border-panel w-0 border-b border-solid px-1 py-0.5">
+                  <span class="flex items-center justify-end gap-0.5">
+                    @if (currentTurnId() !== row.object.identifier && actedIds().has(row.object.identifier)) {
+                      <i
+                        class="material-icons text-ui-dim block text-[14px]!"
+                        [title]="'feature.turnOrder.acted' | transloco"
+                        >check</i
+                      >
+                    } @else {
+                      <i
+                        class="material-icons text-ui-accent block text-[14px]!"
+                        [class.invisible]="currentTurnId() !== row.object.identifier"
+                        >play_arrow</i
+                      >
+                    }
+                    <span class="text-ui-muted tabular-nums">{{ row.order }}</span>
+                  </span>
+                </td>
+                <td class="border-ui-border-panel w-0 border-b border-solid py-0.5 pr-1">
+                  <span
+                    class="bg-ui-input border-ui-border-panel flex size-4.5 items-center justify-center overflow-hidden rounded-sm border border-solid"
+                  >
+                    @if (row.object.imageFile.url) {
+                      <img
+                        class="size-full object-cover object-top"
+                        [src]="row.object.imageFile.url | safe: 'resourceUrl'"
+                        draggable="false"
+                        alt=""
+                      />
+                    }
+                  </span>
+                </td>
+                <td class="border-ui-border-panel border-b border-solid px-1 py-0.5">
+                  <span class="flex items-center gap-1 font-semibold" [title]="row.object.name">
+                    <span class="max-w-40 truncate">{{ row.object.name }}</span>
+                    @if (!canView(row.object)) {
+                      <i class="material-icons text-ui-dim shrink-0 text-[12px]!">lock</i>
+                    }
+                  </span>
+                </td>
+
+                @for (cell of row.cells; track $index) {
+                  <td class="border-ui-border-panel border-b border-solid px-1.5 py-0.5 text-center">
+                    @if (!canView(row.object)) {
+                      <span class="text-ui-dim">-</span>
+                    } @else {
+                      @switch (cell.kind) {
+                        @case ('ailment') {
+                          @let ailment = table.columns[$index].ailment!;
+                          <input
+                            class="size-3.5 cursor-pointer align-middle [accent-color:var(--ui-accent)]"
+                            type="checkbox"
+                            [title]="ailment.effect || ailment.name"
+                            [checked]="isAilmentOn(row.object, ailment)"
+                            (click)="$event.stopPropagation()"
+                            (change)="toggleAilment($event, row.object, ailment)"
+                          />
+                        }
+                        @case ('numberResource') {
+                          <input
+                            class="border-ui-border-panel text-ui-text hover:border-b-ui-accent focus:border-b-ui-accent w-16 [appearance:textfield] rounded-none border-0 border-b border-solid bg-transparent px-0.5 text-center font-[inherit] text-[12px] font-bold outline-none"
+                            type="number"
+                            name="table-current-value"
+                            [style]="'color:' + cell.element!.nowValueColor"
+                            [title]="cell.element!.currentValue + ' / ' + cell.element!.value"
+                            [(ngModel)]="cell.element!.currentValue"
+                            (click)="$event.stopPropagation()"
+                          />
+                        }
+                        @case ('check') {
+                          <input
+                            class="size-3.5 cursor-pointer align-middle [accent-color:var(--ui-accent)]"
+                            type="checkbox"
+                            [checked]="cell.element!.isChecked"
+                            (click)="$event.stopPropagation()"
+                            (change)="cell.element!.value = cell.element!.isChecked ? 0 : 1"
+                          />
+                        }
+                        @case ('calc') {
+                          <span class="text-ui-text font-bold">{{ calcText(cell.element!) }}</span>
+                        }
+                        @case ('value') {
+                          <input
+                            class="border-ui-border-panel text-ui-text hover:border-b-ui-accent focus:border-b-ui-accent w-16 rounded-none border-0 border-b border-solid bg-transparent px-0.5 text-center font-[inherit] text-[12px] outline-none"
+                            name="table-value"
+                            [(ngModel)]="cell.element!.value"
+                            (click)="$event.stopPropagation()"
+                          />
+                        }
+                      }
+                    }
+                  </td>
+                }
+              </tr>
+            }
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+</ng-template>
 
 <ng-template #dataElmTag let-dataElm="dataElm">
   @if (dataElm?.name === newLineString) {
@@ -509,15 +735,226 @@
         @default {
           <span class="flex min-w-0 items-center gap-0.75">
             <span class="text-ui-muted shrink-0 text-[10px] whitespace-nowrap">{{ dataElm.name }}</span>
-            <input
-              class="border-ui-border-panel text-ui-text hover:border-b-ui-accent focus:border-b-ui-accent box-border min-w-[2em] flex-1 [appearance:textfield] rounded-none border-0 border-b border-solid bg-transparent px-0.5 text-right font-[inherit] text-[13px] font-bold transition-[border-color] outline-none hover:[appearance:number-input] focus:[appearance:number-input]"
-              size="1"
-              name="data-value"
-              [(ngModel)]="dataElm.value"
-            />
+            @if (isCalcElement(dataElm)) {
+              <span class="text-ui-text min-w-[2em] flex-1 text-right text-[13px] font-bold">{{
+                calcText(dataElm)
+              }}</span>
+            } @else {
+              <input
+                class="border-ui-border-panel text-ui-text hover:border-b-ui-accent focus:border-b-ui-accent box-border min-w-[2em] flex-1 [appearance:textfield] rounded-none border-0 border-b border-solid bg-transparent px-0.5 text-right font-[inherit] text-[13px] font-bold transition-[border-color] outline-none hover:[appearance:number-input] focus:[appearance:number-input]"
+                size="1"
+                name="data-value"
+                [(ngModel)]="dataElm.value"
+              />
+            }
           </span>
         }
       }
     </span>
+  }
+</ng-template>
+
+<ng-template #sideHeading let-band>
+  @if (band.side.length > 0) {
+    <div class="mt-1 flex items-center gap-1.5 px-1 first:mt-0" data-testid="inventory-side-heading">
+      <span class="size-2 shrink-0 rounded-full" [style.background]="band.color || 'var(--ui-dim)'"></span>
+      <span class="text-ui-muted text-[11px] font-semibold">{{ band.name }}</span>
+      <span class="bg-ui-border-panel h-px grow"></span>
+      <span class="text-ui-dim text-[10px]">{{ band.rows.length }}</span>
+    </div>
+  }
+</ng-template>
+
+<ng-template #itemRow let-gameObject>
+  <div
+    data-testid="inventory-item"
+    class="hover:bg-ui-hover group relative flex cursor-pointer items-center gap-2 rounded-[5px] border border-solid border-transparent px-2 py-1.25 transition-[background,border-color] select-none [-moz-user-drag:none] [-webkit-user-drag:none]"
+    [class.bg-ui-accent-bg!]="selectedIdentifier() === gameObject.identifier"
+    [class.border-ui-accent!]="selectedIdentifier() === gameObject.identifier"
+    [class.opacity-50]="isHiddenRowDimmed(gameObject)"
+    [class.italic]="isHiddenRowDimmed(gameObject)"
+    [class.border-dashed!]="isHiddenRowDimmed(gameObject)"
+    [class.border-ui-border-panel!]="isHiddenRowDimmed(gameObject) && selectedIdentifier() !== gameObject.identifier"
+    [class.opacity-40]="drag.isDragging(gameObject)"
+    (contextmenu)="onContextMenu($event, gameObject)"
+    (click)="selectGameObject(gameObject)"
+    (dblclick)="focusToObject($event, gameObject)"
+    (pointerdown)="drag.down($event, gameObject)"
+    (pointermove)="drag.move($event)"
+    (pointerup)="drag.up($event)"
+    (pointercancel)="drag.cancel()"
+    (lostpointercapture)="drag.cancel()"
+    (mousedown)="onObjectDragBlock($event, gameObject)"
+    (touchstart)="onObjectDragBlock($event, gameObject)"
+  >
+    @if (selectTab() === 'table') {
+      @if (currentTurnId() !== gameObject.identifier && actedIds().has(gameObject.identifier)) {
+        <i
+          class="material-icons text-ui-dim w-3.5 shrink-0 text-[16px]!"
+          [title]="'feature.turnOrder.acted' | transloco"
+          >check</i
+        >
+      } @else {
+        <i
+          class="material-icons text-ui-accent w-3.5 shrink-0 text-[16px]!"
+          [class.invisible]="currentTurnId() !== gameObject.identifier"
+          >play_arrow</i
+        >
+      }
+    }
+    @if (isMultiMove()) {
+      <input
+        class="size-3.5 shrink-0 cursor-pointer [accent-color:var(--ui-accent)]"
+        type="checkbox"
+        [checked]="multiMoveTargets().has(gameObject.identifier)"
+        (change)="toggleMultiMoveTarget($event, $any(gameObject))"
+      />
+    }
+
+    <div
+      class="bg-ui-input border-ui-border-panel flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-solid"
+    >
+      @if (gameObject.imageFile.url) {
+        <img
+          class="size-full object-cover object-top"
+          [src]="gameObject.imageFile.url | safe: 'resourceUrl'"
+          draggable="false"
+          alt=""
+        />
+      } @else {
+        <i class="material-icons text-ui-dim text-[20px]! opacity-50">person</i>
+      }
+    </div>
+
+    <div class="flex min-w-0 flex-1 flex-col gap-0.75">
+      <div
+        class="text-ui-text flex items-center gap-1 truncate text-[13px] font-semibold"
+        [class.text-ui-accent!]="selectedIdentifier() === gameObject.identifier"
+      >
+        <span class="truncate">{{ gameObject.name }}</span>
+        @if (!canView(gameObject)) {
+          <i class="material-icons text-ui-dim shrink-0 text-[13px]!">lock</i>
+        }
+        @if (canView(gameObject)) {
+          @let buffs = buffBadgesOf(gameObject);
+          @for (badge of buffs.shown; track badge.identifier) {
+            <span
+              data-testid="inventory-buff-badge"
+              class="ring-ui-border-panel inline-flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full text-[10px] leading-none font-normal text-white ring-1"
+              [style.background]="badge.color"
+              [title]="
+                badge.name +
+                (badge.effect ? ' / ' + badge.effect : '') +
+                (badge.expires ? ' (' + badge.rounds + ')' : '')
+              "
+            >
+              @if (badge.iconUrl) {
+                <img class="size-full object-contain" [src]="badge.iconUrl | safe: 'resourceUrl'" alt="" />
+              } @else {
+                {{ badge.icon }}
+              }
+            </span>
+          }
+          @if (buffs.more > 0) {
+            <span class="text-ui-muted shrink-0 text-[10px] font-normal">+{{ buffs.more }}</span>
+          }
+        }
+      </div>
+      @if (gameObject.rootDataElement && canView(gameObject)) {
+        <div class="grid w-full grid-cols-2 items-start gap-x-2 gap-y-0.75">
+          @for (dataElm of getInventoryTags($any(gameObject)); track dataElm?.identifier ?? $index) {
+            <ng-container *ngTemplateOutlet="dataElmTag; context: { dataElm: dataElm }"></ng-container>
+          }
+        </div>
+      }
+    </div>
+
+    <button
+      class="text-ui-muted hover:bg-ui-hover hover:text-ui-accent hidden size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] group-hover:inline-flex [&_.material-icons]:text-base!"
+      [class.inline-flex!]="selectedIdentifier() === gameObject.identifier"
+      type="button"
+      [title]="'feature.turnOrder.setCurrent' | transloco"
+      (click)="setTurnOrder($event, gameObject)"
+    >
+      <i class="material-icons">flag</i>
+    </button>
+
+    <button
+      class="text-ui-muted hover:bg-ui-hover hover:text-ui-text hidden size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background] group-hover:inline-flex [&_.material-icons]:text-base!"
+      [class.inline-flex!]="selectedIdentifier() === gameObject.identifier"
+      type="button"
+      [title]="'feature.inventory.panel.menu' | transloco"
+      (click)="onContextMenu($event, gameObject)"
+    >
+      <i class="material-icons">more_vert</i>
+    </button>
+  </div>
+</ng-template>
+
+<ng-template #folderHeading let-node>
+  <div
+    class="text-ui-text bg-ui-elevated border-ui-border-panel hover:border-ui-accent group/folder mt-1 flex cursor-pointer items-center gap-1 rounded-[5px] border border-solid p-1.5 text-[12px] font-semibold transition-[background,border-color] select-none first:mt-0"
+    role="button"
+    data-folder-dropzone
+    [attr.data-folder-path]="node.path"
+    [attr.aria-expanded]="!isFolderCollapsed(node.path)"
+    [class.text-ui-muted!]="!node.path"
+    [class.bg-ui-accent-bg!]="drag.isDropFolder(node.path)"
+    [class.border-ui-accent!]="drag.isDropFolder(node.path)"
+    (click)="toggleFolder(node.path)"
+    (contextmenu)="onFolderContextMenu($event, node.path)"
+  >
+    <i
+      class="material-icons text-ui-muted shrink-0 text-[18px]! transition-transform"
+      [class.-rotate-90]="isFolderCollapsed(node.path)"
+      >expand_more</i
+    >
+    @if (isEditingFolder(node.path)) {
+      <input
+        appAutoFocus
+        class="border-ui-accent text-ui-text box-border min-w-0 flex-1 rounded-none border-0 border-b border-solid bg-transparent px-0.5 font-[inherit] text-[12px] font-semibold outline-none"
+        name="folder-name"
+        [value]="node.name"
+        (click)="$event.stopPropagation()"
+        (keydown.escape)="cancelFolderRename()"
+        (keydown.enter)="commitFolderRename(node.path, $any($event.target).value)"
+        (blur)="commitFolderRename(node.path, $any($event.target).value, true)"
+      />
+    } @else {
+      <span class="truncate">{{ node.path ? node.name : ('feature.inventory.panel.unfiled' | transloco) }}</span>
+    }
+    <span class="text-ui-dim ml-auto shrink-0 text-[11px] font-normal tabular-nums">{{ node.totalCount }}</span>
+    @if (node.path && canEdit() && !isEditingFolder(node.path)) {
+      <button
+        class="text-ui-dim hover:bg-ui-hover hover:text-ui-accent inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] [&_.material-icons]:text-[14px]!"
+        type="button"
+        [title]="'feature.inventory.contextMenu.renameFolder' | transloco"
+        (click)="$event.stopPropagation(); startFolderRename(node.path)"
+      >
+        <i class="material-icons">edit</i>
+      </button>
+      <button
+        class="text-ui-dim hover:bg-ui-danger-bg hover:text-ui-danger inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent p-0 transition-[background,color] [&_.material-icons]:text-[14px]!"
+        type="button"
+        [title]="'feature.inventory.contextMenu.deleteFolder' | transloco"
+        (click)="$event.stopPropagation(); deleteFolder(node.path)"
+      >
+        <i class="material-icons">delete</i>
+      </button>
+    }
+  </div>
+</ng-template>
+
+<ng-template #folderNode let-node>
+  <ng-container *ngTemplateOutlet="folderHeading; context: { $implicit: node }"></ng-container>
+  @if (!isFolderCollapsed(node.path)) {
+    <div class="border-ui-border-panel ml-2.5 flex flex-col gap-0.5 border-l border-solid pl-1.5">
+      @for (child of node.children; track child.path) {
+        <ng-container *ngTemplateOutlet="folderNode; context: { $implicit: child }"></ng-container>
+      }
+      @for (row of node.items; track row.identifier) {
+        <ng-container *ngTemplateOutlet="itemRow; context: { $implicit: row.object }"></ng-container>
+      }
+    </div>
   }
 </ng-template>

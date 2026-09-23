@@ -42,7 +42,8 @@ export interface HeldDie {
    * What each of them was showing when it was put away, in that order.
    *
    * A die keeps the face it came to rest on, so a set put away mid-scene comes back out as
-   * it was left. Left off where a die was written onto the sheet by hand.
+   * it was left. Left off where a die was written onto the sheet by hand, and where the die
+   * was kept to its owner: the sheet is read by whoever may read the sheet.
    */
   shown?: string[];
 }
@@ -67,20 +68,21 @@ export function heldDieOfSymbol(symbol: DiceSymbol, count = 1): HeldDie {
     .filter((face): face is DataElement => face instanceof DataElement)
     .map<HeldDieFace>((face) => ({ label: face.name, imageIdentifier: String(face.value ?? '') }));
 
-  return { name: symbol.name, count, faces, shown: Array(count).fill(symbol.face) };
+  const shown: string[] = symbol.hasOwner ? [] : Array(count).fill(symbol.face);
+  return { name: symbol.name, count, faces, shown };
 }
 
 /**
- * Puts a die onto the sheet.
+ * Puts a die onto the sheet, and says whether it was kept.
  *
  * A die of the same name is the same die, so it is counted rather than written again;
  * a table of six identical dice is a count of six, not six groups to read past.
  */
-export function storeHeldDie(character: GameCharacter, die: HeldDie): void {
-  if (die.faces.length < 1) return;
+export function storeHeldDie(character: GameCharacter, die: HeldDie): boolean {
+  if (die.faces.length < 1) return false;
 
   const section = heldDiceSection(character) ?? createHeldDiceSection(character);
-  if (!section) return;
+  if (!section) return false;
 
   const existing = section.children.find(
     (group): group is DataElement => group instanceof DataElement && group.name === die.name
@@ -90,10 +92,10 @@ export function storeHeldDie(character: GameCharacter, die: HeldDie): void {
     if (count) count.value = countOf(existing) + die.count;
     const shown = existing.getFirstElementByName(HELD_DICE_SHOWN);
     if (shown) shown.value = [...shownOf(existing), ...(die.shown ?? [])].join(SHOWN_SEPARATOR);
-    return;
+    return true;
   }
 
-  section.appendChild(createGroup(character, die));
+  return section.appendChild(createGroup(die)) != null;
 }
 
 /**
@@ -133,26 +135,28 @@ function heldDiceSection(character: GameCharacter): DataElement | null {
   return character.detailDataElement?.getFirstElementByName(HELD_DICE_SECTION) ?? null;
 }
 
+/**
+ * A section of its own each time, under an identifier nothing has carried before.
+ *
+ * The section comes and goes with the dice, and one under the same identifier as the last
+ * is one the rest of the table has already been told to delete: it is refused there, and
+ * the deletion comes back to take the new one away with it.
+ */
 function createHeldDiceSection(character: GameCharacter): DataElement | null {
   const detail = character.detailDataElement;
   if (!detail) return null;
 
   // Shown as a table, so a die reads as one row of faces rather than a field for each.
-  const section = DataElement.create(
-    HELD_DICE_SECTION,
-    '',
-    {
-      [DataElementAttribute.ROLE]: DataElementRole.SECTION,
-      [DataElementAttribute.VIEW_MODE]: DataElementViewMode.TABLE,
-      [DataElementAttribute.ROW_HEADER_LABEL]: HELD_DICE_ROW_HEADER,
-    },
-    `${HELD_DICE_SECTION}_${character.identifier}`
-  );
+  const section = DataElement.create(HELD_DICE_SECTION, '', {
+    [DataElementAttribute.ROLE]: DataElementRole.SECTION,
+    [DataElementAttribute.VIEW_MODE]: DataElementViewMode.TABLE,
+    [DataElementAttribute.ROW_HEADER_LABEL]: HELD_DICE_ROW_HEADER,
+  });
   detail.appendChild(section);
   return section;
 }
 
-function createGroup(character: GameCharacter, die: HeldDie): DataElement {
+function createGroup(die: HeldDie): DataElement {
   const group = DataElement.create(die.name, '', { [DataElementAttribute.ROLE]: DataElementRole.GROUP });
   group.appendChild(
     DataElement.create(HELD_DICE_COUNT, die.count, {

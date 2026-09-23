@@ -1,102 +1,142 @@
 import { Pipe, PipeTransform } from '@angular/core';
+import {
+  contrastRatio,
+  lchToRgb,
+  parseHexColor,
+  relativeLuminance,
+  rgbToCss,
+  rgbToLch,
+} from '@axe/core/util/tonal-color';
+import { chatBubbleBaseTone } from '@axe/domain/ui/chat-bubble-base';
 
-function parseHex(hex: string): [number, number, number] | null {
-  const clean = hex.replace(/^#/, '');
-  if (clean.length !== 6 && clean.length !== 3) return null;
-  const full =
-    clean.length === 3
-      ? clean
-          .split('')
-          .map((c) => c + c)
-          .join('')
-      : clean;
-  return [
-    parseInt(full.slice(0, 2), 16) / 255,
-    parseInt(full.slice(2, 4), 16) / 255,
-    parseInt(full.slice(4, 6), 16) / 255,
-  ];
+/** What the bubble aims for when it is worked out: the reading standard for body text. */
+export const CHAT_TARGET_RATIO = 4.5;
+
+/**
+ * How badly a pair has to read before the panel says anything about it.
+ *
+ * Saying so at the standard itself means saying so about a pair that missed it by a
+ * hundredth, which reads as the panel refusing to be satisfied. This is the figure below
+ * which a colour is genuinely hard to make out rather than merely short of the mark.
+ */
+export const CHAT_WARN_RATIO = 3;
+
+/** Only a whisper of the speaker's hue: more of it costs the contrast the text needs. */
+const BUBBLE_CHROMA = 8;
+
+/** How finely the search walks the tone, and how far it may go before it gives up. */
+const TONE_STEP = 0.5;
+const TONE_FLOOR = 6;
+const TONE_CEILING = 98;
+
+/**
+ * The bubble nearest the page's own background that the chosen colour can be read on.
+ *
+ * The colour belongs to the reader and is never touched, so the bubble is what moves, and
+ * it leaves the background it shares with every other panel only as far as it must, in
+ * whichever direction is nearer.
+ */
+export function autoChatBubble(color: string, theme: 'light' | 'dark', base?: number): string {
+  const baseTone = base ?? chatBubbleBaseTone(theme);
+  const key = `${color}|${baseTone}`;
+  const known = bubbles.get(key);
+  if (known !== undefined) return known;
+  const bubble = searchChatBubble(color, baseTone);
+  if (bubbles.size >= BUBBLE_MEMORY) bubbles.clear();
+  bubbles.set(key, bubble);
+  return bubble;
 }
 
-function luminance(r: number, g: number, b: number): number {
-  const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-}
+/**
+ * How many worked-out bubbles are remembered. A room has a handful of colours, but every line
+ * drawn asks again, and a replay that brings back a whole chat log asks for all of them at once.
+ */
+const BUBBLE_MEMORY = 256;
+const bubbles = new Map<string, string>();
 
-function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  if (max === min) return [0, 0, l];
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  const h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) / 6 : max === g ? ((b - r) / d + 2) / 6 : ((r - g) / d + 4) / 6;
-  return [h * 360, s, l];
-}
+function searchChatBubble(color: string, baseTone: number): string {
+  const rgb = parseHexColor(color);
+  if (!rgb) return '';
 
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  h /= 360;
-  if (s === 0) return [l, l, l];
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-  const p = 2 * l - q;
-  const hue2rgb = (t: number): number => {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
-    if (t < 1 / 6) return p + (q - p) * 6 * t;
-    if (t < 1 / 2) return q;
-    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-    return p;
-  };
-  return [hue2rgb(h + 1 / 3), hue2rgb(h), hue2rgb(h - 1 / 3)];
-}
+  const { chroma, hue } = rgbToLch(rgb);
+  const tint = Math.min(chroma, BUBBLE_CHROMA);
+  const textLum = relativeLuminance(rgb);
+  // Measured on the colour as it will be written out, so what is returned is what was tested:
+  // a tone that clears the standard as a float can fall a hair under it once it is a byte.
+  const shown = (tone: number) => parseHexColor(cssToHex(rgbToCss(lchToRgb({ tone, chroma: tint, hue }))))!;
+  const at = (tone: number) => relativeLuminance(shown(tone));
+  const reads = (tone: number) => contrastRatio(textLum, at(tone)) >= CHAT_TARGET_RATIO;
 
-const MIN_RATIO = 4.5;
+  if (reads(baseTone)) return rgbToCss(lchToRgb({ tone: baseTone, chroma: tint, hue }));
 
-function contrastBackground(h: number, s: number, textLum: number): { bg: string; border: string } {
-  const bgS = s * 0.06;
-  const lighten = textLum < 0.5;
-  const targetLum = lighten ? MIN_RATIO * (textLum + 0.05) - 0.05 : (textLum + 0.05) / MIN_RATIO - 0.05;
-
-  let lo = lighten ? 0.5 : 0;
-  let hi = lighten ? 1 : 0.5;
-  for (let i = 0; i < 24; i++) {
-    const mid = (lo + hi) / 2;
-    const lum = luminance(...hslToRgb(h, bgS, mid));
-    if (lighten ? lum < targetLum : lum > targetLum) {
-      if (lighten) lo = mid;
-      else hi = mid;
-    } else {
-      if (lighten) hi = mid;
-      else lo = mid;
+  for (let away = TONE_STEP; away <= 100; away += TONE_STEP) {
+    const up = baseTone + away;
+    const down = baseTone - away;
+    const upReads = up <= TONE_CEILING && reads(up);
+    const downReads = down >= TONE_FLOOR && reads(down);
+    if (upReads && downReads) {
+      const better = contrastRatio(textLum, at(up)) >= contrastRatio(textLum, at(down)) ? up : down;
+      return rgbToCss(lchToRgb({ tone: better, chroma: tint, hue }));
     }
+    if (upReads) return rgbToCss(lchToRgb({ tone: up, chroma: tint, hue }));
+    if (downReads) return rgbToCss(lchToRgb({ tone: down, chroma: tint, hue }));
   }
-  const bgL = (lo + hi) / 2;
-  const borderL = lighten ? Math.max(0, bgL - 0.2) : Math.min(1, bgL + 0.22);
-  const toInt = (c: number) => Math.round(Math.min(1, Math.max(0, c)) * 255);
-  const toRgb = (l: number) => {
-    const [r, g, b] = hslToRgb(h, bgS, l);
-    return `rgb(${toInt(r)},${toInt(g)},${toInt(b)})`;
-  };
-  return { bg: toRgb(bgL), border: toRgb(borderL) };
+
+  const best =
+    contrastRatio(textLum, at(TONE_CEILING)) >= contrastRatio(textLum, at(TONE_FLOOR)) ? TONE_CEILING : TONE_FLOOR;
+  return rgbToCss(lchToRgb({ tone: best, chroma: tint, hue }));
+}
+
+/** How well a colour reads on a given bubble, or on the one it would be given. */
+export function chatColorContrast(color: string, bubble: string, theme: 'light' | 'dark', base?: number): number {
+  const text = parseHexColor(color);
+  if (!text) return 0;
+  const shown = parseHexColor(bubble) ?? parseHexColor(cssToHex(autoChatBubble(color, theme, base)));
+  if (!shown) return 0;
+  return contrastRatio(relativeLuminance(text), relativeLuminance(shown));
+}
+
+/** Converts an `rgb(r,g,b)` colour as written by `rgbToCss` to `#rrggbb`; anything else is returned unchanged. */
+export function cssToHex(css: string): string {
+  const match = /rgb\((\d+),(\d+),(\d+)\)/.exec(css);
+  if (!match) return css;
+  return '#' + [1, 2, 3].map((i) => Number(match[i]).toString(16).padStart(2, '0')).join('');
+}
+
+/** A border that stands off the bubble it surrounds, whichever way there is room to go. */
+function borderFor(bubbleCss: string): string {
+  const rgb = parseHexColor(cssToHex(bubbleCss));
+  if (!rgb) return bubbleCss;
+  const { tone, chroma, hue } = rgbToLch(rgb);
+  return rgbToCss(lchToRgb({ tone: tone > 50 ? tone - 14 : tone + 16, chroma, hue }));
 }
 
 @Pipe({ name: 'chatColorStyle', pure: true })
 export class ChatColorStylePipe implements PipeTransform {
-  transform(color: string | null | undefined): Record<string, string> | null {
+  /**
+   * The colour a message is shown in, and the bubble it sits on.
+   *
+   * The colour is the reader's own and is used exactly as it was chosen. The bubble is
+   * theirs too when they have set one for this theme; where they have not, one is worked
+   * out that the colour can be read on.
+   */
+  transform(
+    color: string | null | undefined,
+    theme: 'light' | 'dark' = 'light',
+    bubble?: string | null,
+    base?: number
+  ): Record<string, string> | null {
     if (!color) return null;
+    if (!parseHexColor(color)) return null;
 
-    const rgb = parseHex(color);
-    if (!rgb) return null;
-
-    const [r, g, b] = rgb;
-    const [h, s] = rgbToHsl(r, g, b);
-    const textLum = luminance(r, g, b);
-    const { bg, border } = contrastBackground(h, s, textLum);
+    const chosen =
+      bubble && parseHexColor(bubble) ? rgbToCss(parseHexColor(bubble)!) : autoChatBubble(color, theme, base);
 
     return {
       color,
-      'background-color': bg,
-      '--bubble-bg': bg,
-      '--ui-bubble-caret-border': border,
+      'background-color': chosen,
+      '--bubble-bg': chosen,
+      '--ui-bubble-caret-border': borderFor(chosen),
     };
   }
 }

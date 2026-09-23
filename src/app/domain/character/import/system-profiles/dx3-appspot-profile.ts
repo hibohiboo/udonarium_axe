@@ -11,6 +11,7 @@ import {
   isNonEmptyScalar,
   toFiniteNumber,
 } from '@axe/domain/character/import/imported-character';
+import { labeledSection } from '@axe/domain/character/import/system-profiles/labeled-section';
 
 interface FieldLabel {
   key: string;
@@ -122,6 +123,13 @@ function resolveRoot(record: Record<string, unknown>): Record<string, unknown> {
   return asRecord(record['data']) ?? record;
 }
 
+/**
+ * Whether the pasted json has the shape of a warehouse character: a named `base` or a
+ * `baseAbility`, bare or wrapped in `data`.
+ *
+ * Every warehouse character has that shape, so this is only asked once the `dx3` slug has chosen
+ * the profile.
+ */
 export function isDx3AppspotCharacter(parsed: unknown): boolean {
   const record = asRecord(parsed);
   if (!record) return false;
@@ -204,31 +212,6 @@ function buildSkillSection(skills: Dx3Skill[]): ImportedSection | null {
   return { label: '技能', groups };
 }
 
-function labeledSection(
-  label: string,
-  array: unknown,
-  fieldLabels: FieldLabel[],
-  source?: (record: Record<string, unknown>) => Record<string, unknown>
-): ImportedSection | null {
-  const groups: ImportedGroup[] = [];
-  asArray(array).forEach((element, index) => {
-    const record = asRecord(element);
-    if (!record) return;
-    const data = source ? (source(record) ?? record) : record;
-    const name = asString(record['name']).trim();
-    const fields: ImportedField[] = [];
-    for (const field of fieldLabels) {
-      const raw = data[field.key];
-      if (!isNonEmptyScalar(raw)) continue;
-      const classified = classifyScalar(raw);
-      fields.push({ label: field.label, value: classified.value, kind: classified.kind });
-    }
-    if (name === '' && fields.length === 0) return;
-    groups.push({ label: name === '' ? `${label} ${index + 1}` : name, fields });
-  });
-  return groups.length > 0 ? { label, groups } : null;
-}
-
 function buildProfileSection(base: Record<string, unknown> | null): ImportedSection | null {
   if (!base) return null;
   const fields: ImportedField[] = [];
@@ -266,6 +249,13 @@ function buildPalette(params: ImportedParam[], skills: Dx3Skill[]): string {
   return lines.join('\n');
 }
 
+/**
+ * Builds the imported model from a `dx3` warehouse character, or null for data of another shape.
+ *
+ * Ability and sub-ability totals become parameters, HP and encroachment resources; skills grouped
+ * by ability, effects, combos, weapons, armour, items, loises, the profile and the outline become
+ * sections; and the palette offers a roll for each ability and each skill tied to one.
+ */
 export function buildDx3AppspotCharacter(parsed: unknown): ImportedCharacter | null {
   if (!isDx3AppspotCharacter(parsed)) return null;
   const root = resolveRoot(asRecord(parsed)!);

@@ -44,19 +44,19 @@ test.describe('インベントリパネル', () => {
   });
 
   test('表示設定画面を開いて並び順やタグ設定ができること', async ({ page }) => {
+    // 並び順とタグの設定は自前のパネルに移っている。
     const settingsButton = page.locator('game-object-inventory button[title="表示設定"]');
     await settingsButton.click();
-    await expect(page.locator('game-object-inventory input[placeholder="タグ名"]').first()).toBeVisible({
-      timeout: 3000,
-    });
-    await expect(page.locator('game-object-inventory select').first()).toBeVisible();
-    await expect(
-      page.locator(
-        'game-object-inventory input[placeholder="スペース区切りでタグ名、スラッシュで改行 例: HP MP / メモ"]'
-      )
-    ).toBeVisible();
-    // 「表示設定」をもう一度クリックすると編集モードを抜ける
+    const panel = page.locator('inventory-filter-panel');
+    await expect(panel.locator('input[placeholder="タグ名"]').first()).toBeVisible({ timeout: 5000 });
+    await expect(panel.locator('select').first()).toBeVisible();
+    // 卓上とインベントリの二枚ぶんの表示項目欄が並ぶ。書き方の例は増えていくので、文言ではなく欄の名前で探す。
+    await expect(panel.locator('input[name="data-tag"]')).toBeVisible();
+    await expect(panel.locator('input[name="table-data-tag"]')).toBeVisible();
+
+    // 「表示設定」をもう一度押すとパネルが閉じる。
     await settingsButton.click();
+    await expect(panel).toHaveCount(0);
   });
 });
 

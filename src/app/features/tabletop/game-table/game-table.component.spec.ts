@@ -1,15 +1,38 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { HeldPieceService } from '@axe/application/tabletop/held-piece.service';
+import { MovePlanService } from '@axe/application/tabletop/move-plan.service';
+import { TabletopDisplayService } from '@axe/application/tabletop/tabletop-display.service';
+import { ContextMenuAction, ContextMenuService, ContextMenuType } from '@axe/application/ui/context-menu.service';
+import { DisplayCalibrationService } from '@axe/application/ui/display-calibration.service';
 import { MobileLayoutService } from '@axe/application/ui/mobile-layout.service';
-import { ObjectStore } from '@axe/core/sync/object-store';
+import { MotionService } from '@axe/application/ui/motion.service';
+import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
+import { ViewLockService } from '@axe/application/ui/view-lock.service';
+import { ViewModePreferenceService } from '@axe/application/ui/view-mode-preference.service';
+import { ViewportService } from '@axe/application/ui/viewport.service';
+import { ImageStorage } from '@axe/core/storage/image-storage';
+import { PERF_HEX_MASK_SVG, perfCounters } from '@axe/core/util/perf-counters';
 import { GameCharacter } from '@axe/domain/character/game-character';
+import { DataElement } from '@axe/domain/data/data-element';
+import { Party } from '@axe/domain/party/party';
+import { PeerCursor } from '@axe/domain/peer/peer-cursor';
+import { PeerRole } from '@axe/domain/peer/peer-role';
 import { GridType } from '@axe/domain/tabletop/game-table';
+import { TableBackgroundLayer } from '@axe/domain/tabletop/table-background-layer';
+import { TableSurface } from '@axe/domain/tabletop/tabletop-object';
+import { Terrain } from '@axe/domain/tabletop/terrain';
+import { WhiteBoard } from '@axe/domain/tabletop/white-board';
 import { GameTableComponent } from '@axe/features/tabletop/game-table/game-table.component';
 import { TEST_PROVIDERS } from '@axe/testing/test-providers';
+import {
+  Z_OFFSET_BACKGROUND_LAYERS_PX,
+  Z_OFFSET_FOREGROUND_LAYERS_PX,
+  Z_OFFSET_MASK_PX,
+} from '@axe/ui/tabletop/z-offset';
 
 describe('GameTableComponent', () => {
   let component: GameTableComponent;
   let fixture: ComponentFixture<GameTableComponent>;
-  let store: ObjectStore;
 
   beforeEach(async () => {
     TestBed.configureTestingModule({
@@ -19,20 +42,565 @@ describe('GameTableComponent', () => {
   });
 
   beforeEach(() => {
-    store = ObjectStore.instance;
-    store.getObjects().forEach((object) => store.delete(object, false));
-    store.clearDeleteHistory();
     fixture = TestBed.createComponent(GameTableComponent);
     component = fixture.componentInstance;
   });
 
   afterEach(() => {
-    store.getObjects().forEach((object) => store.delete(object, false));
-    store.clearDeleteHistory();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('should create', () => {
     expect(component).toBeTruthy();
+  });
+
+  describe('what drifts under the board', () => {
+    const layers = (): HTMLElement[] =>
+      Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('[data-testid="background-layer"]'));
+    const surface = (): HTMLElement =>
+      (fixture.nativeElement as HTMLElement).querySelector('[data-testid="background-layers"]')
+        ?.nextElementSibling as HTMLElement;
+
+    /** Lays a picture under the board and reports it as measured, the way a load would. */
+    const lay = (
+      options: Partial<{
+        order: number;
+        speedX: number;
+        speedY: number;
+        enabled: boolean;
+        placement: string;
+        scale: number;
+        opacity: number;
+      }> = {}
+    ) => {
+      const layer = new TableBackgroundLayer();
+      layer.initialize();
+      layer.imageIdentifier = ImageStorage.instance.add('sky.png').identifier;
+      layer.order = options.order ?? 0;
+      layer.speedX = options.speedX ?? 0;
+      layer.speedY = options.speedY ?? 0;
+      if (options.enabled === false) layer.enabled = false;
+      if (options.placement) layer.placement = options.placement;
+      if (options.scale !== undefined) layer.scale = options.scale;
+      if (options.opacity !== undefined) layer.opacity = options.opacity;
+      component.currentTable.appendChild(layer);
+      return layer;
+    };
+
+    const measured = (layer: TableBackgroundLayer, width = 200, height = 100) => {
+      (
+        component as unknown as { onBackgroundLayerImageLoad(id: string, event: Event): void }
+      ).onBackgroundLayerImageLoad(layer.imageIdentifier, {
+        target: { naturalWidth: width, naturalHeight: height },
+      } as unknown as Event);
+    };
+
+    it('draws nothing while the table has laid nothing', () => {
+      fixture.detectChanges();
+
+      expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid="background-layers"]')).toBeNull();
+    });
+
+    it('leaves out a layer that has been turned off', () => {
+      lay({ order: 0 });
+      lay({ order: 1, enabled: false });
+      fixture.detectChanges();
+
+      expect(layers()).toHaveLength(1);
+    });
+
+    it('sinks the whole run below the board, and says so once', () => {
+      lay();
+      fixture.detectChanges();
+
+      const wrapper = (fixture.nativeElement as HTMLElement).querySelector(
+        '[data-testid="background-layers"]'
+      ) as HTMLElement;
+
+      expect(wrapper.getAttribute('data-layer-depth')).toBe(`translateZ(${-Z_OFFSET_BACKGROUND_LAYERS_PX}px)`);
+      expect(layers().every((el) => el.getAttribute('data-layer-depth') === null)).toBe(true);
+    });
+
+    it('writes the furthest back first, since a flattened run paints in document order', () => {
+      const far = lay({ order: 0 });
+      const near = lay({ order: 1 });
+      fixture.detectChanges();
+
+      expect(component.underLayerViews().map((view) => view.identifier)).toEqual([far.identifier, near.identifier]);
+    });
+
+    it('leaves the drifting box unpromoted, since a drift that never ends promotes itself', () => {
+      const layer = lay({ speedX: 100 });
+      measured(layer);
+      fixture.detectChanges();
+
+      const boxes = (fixture.nativeElement as HTMLElement).querySelectorAll('[data-testid="background-layer-sheet"]');
+
+      expect(boxes).toHaveLength(1);
+      expect(Array.from(boxes).every((el) => !el.className.includes('will-change'))).toBe(true);
+    });
+
+    it('writes the drift onto the box itself, since a name that never lands stops it silently', () => {
+      const layer = lay({ speedX: 100, speedY: 40 });
+      measured(layer, 200, 100);
+      fixture.detectChanges();
+
+      const sheet = (fixture.nativeElement as HTMLElement).querySelector(
+        '[data-testid="background-layer-sheet"]'
+      ) as HTMLElement;
+
+      expect(sheet.style.getPropertyValue('--bg-layer-x-name')).toBe('bgLayerScrollX');
+      expect(sheet.style.getPropertyValue('--bg-layer-y-name')).toBe('bgLayerScrollY');
+      expect(sheet.style.getPropertyValue('--bg-layer-tile-w')).toBe('200px');
+      expect(sheet.style.getPropertyValue('--bg-layer-tile-h')).toBe('100px');
+    });
+
+    it('asks for one surface a layer, however many ways it drifts', () => {
+      const layer = lay({ speedX: 100, speedY: 40 });
+      measured(layer, 200, 100);
+      fixture.detectChanges();
+
+      const drifting = (fixture.nativeElement as HTMLElement).querySelectorAll('.bg-layer-drift');
+      const view = component.underLayerViews()[0];
+
+      expect(drifting).toHaveLength(1);
+      expect(view.style['--bg-layer-x-name']).toBe('bgLayerScrollX');
+      expect(view.style['--bg-layer-y-name']).toBe('bgLayerScrollY');
+    });
+
+    it('draws nothing for a layer that has no picture yet, and leaves the veil on', () => {
+      const layer = new TableBackgroundLayer();
+      layer.initialize();
+      component.currentTable.appendChild(layer);
+      fixture.detectChanges();
+
+      expect(layers()).toHaveLength(0);
+      expect(component.showsTableSurfaceVeil()).toBe(true);
+    });
+
+    it('stands still until the picture has been measured, rather than showing a seam', () => {
+      lay({ speedX: 100 });
+      fixture.detectChanges();
+
+      expect(component.underLayerViews()[0].drifts).toBe(false);
+    });
+
+    it('drifts by exactly one tile once the picture has been measured', () => {
+      const layer = lay({ speedX: 100 });
+      measured(layer, 200, 100);
+      fixture.detectChanges();
+
+      const view = component.underLayerViews()[0];
+
+      expect(view.drifts).toBe(true);
+      expect(view.style['--bg-layer-x-duration']).toBe('2s');
+      expect(view.style['--bg-layer-tile-w']).toBe('200px');
+    });
+
+    it('leaves an axis alone that was not asked to move', () => {
+      const layer = lay({ speedX: 100 });
+      measured(layer);
+      fixture.detectChanges();
+
+      const view = component.underLayerViews()[0];
+
+      expect(view.style['--bg-layer-x-name']).toBe('bgLayerScrollX');
+      expect(view.style['--bg-layer-y-name']).toBeUndefined();
+    });
+
+    it('runs the other way for a speed that is going backwards', () => {
+      const layer = lay({ speedY: -50 });
+      measured(layer, 200, 100);
+      fixture.detectChanges();
+
+      const view = component.underLayerViews()[0];
+
+      expect(view.style['--bg-layer-y-direction']).toBe('reverse');
+      expect(view.style['--bg-layer-y-duration']).toBe('2s');
+    });
+
+    it('holds still for a reader who has asked for less movement', () => {
+      const layer = lay({ speedX: 100 });
+      measured(layer);
+      // The choice is written down, so it has to be put back or the rest of the file inherits it.
+      const motion = TestBed.inject(MotionService);
+      motion.set('off');
+      try {
+        fixture.detectChanges();
+
+        expect(component.underLayerViews()[0].drifts).toBe(false);
+      } finally {
+        motion.set('auto');
+      }
+    });
+
+    it('lays the picture edge to edge both ways, since a drift is one tile passing', () => {
+      const layer = lay();
+      measured(layer);
+      fixture.detectChanges();
+
+      expect(component.underLayerViews()[0].style['background-repeat']).toBe('repeat');
+    });
+
+    it('reaches one tile past the board on the side the drift heads for, and nowhere else', () => {
+      const layer = lay({ speedX: 100 });
+      measured(layer, 200, 100);
+      fixture.detectChanges();
+
+      expect(component.underLayerViews()[0].style['inset']).toBe('0px -200px 0px 0px');
+    });
+
+    it('draws nothing for a layer that has been turned down to nothing', () => {
+      lay({ opacity: 0 });
+      fixture.detectChanges();
+
+      expect(layers()).toHaveLength(0);
+    });
+
+    it('holds a tile to the board, so the spare a drift needs cannot outgrow it', () => {
+      // Ten times a 200px picture is 2000px of tile, and a drift asks for a tile of spare cloth.
+      // Unheld, the sheet would reach 2000px past a board only 1000px across.
+      const table = component.currentTable;
+      table.width = 20;
+      table.height = 20;
+      table.gridSize = 50;
+      const layer = lay({ speedX: 100, scale: 10 });
+      measured(layer, 200, 100);
+      fixture.detectChanges();
+
+      const view = component.underLayerViews()[0];
+
+      // Two thousand by one thousand held to a board of a thousand square: the wide side is
+      // the tighter fit, so both sides come in by half and the picture keeps its shape.
+      expect(view.style['background-size']).toBe('1000px 500px');
+      expect(view.style['inset']).toBe('0px -1000px 0px 0px');
+    });
+
+    it('sits flush with the board while nothing drifts, so the pattern meets its corner', () => {
+      const layer = lay();
+      measured(layer, 200, 100);
+      fixture.detectChanges();
+
+      expect(component.underLayerViews()[0].style['inset']).toBe('0px 0px 0px 0px');
+    });
+
+    it('wears the same shape as the board, so a hex table keeps its outline', () => {
+      component.currentTable.gridType = GridType.HEX_VERTICAL;
+      lay();
+      fixture.detectChanges();
+
+      const wrapper = (fixture.nativeElement as HTMLElement).querySelector(
+        '[data-testid="background-layers"]'
+      ) as HTMLElement;
+
+      expect(wrapper.style.getPropertyValue('mask')).toBe(component.tableSurfaceStyle()['mask']);
+    });
+
+    it('takes the veil off the board, which would otherwise wash the layers out', () => {
+      expect(component.showsTableSurfaceVeil()).toBe(true);
+
+      lay();
+      fixture.detectChanges();
+
+      expect(component.showsTableSurfaceVeil()).toBe(false);
+      expect(surface().classList.contains('bg-white/15')).toBe(false);
+    });
+
+    it('leaves the veil on for a board with nothing under it, whatever is over it', () => {
+      lay({ placement: 'over' });
+      fixture.detectChanges();
+
+      expect(component.showsTableSurfaceVeil()).toBe(true);
+    });
+  });
+
+  describe('what drifts over the board', () => {
+    const lay = (placement: string) => {
+      const layer = new TableBackgroundLayer();
+      layer.initialize();
+      layer.imageIdentifier = ImageStorage.instance.add('cloud.png').identifier;
+      layer.placement = placement;
+      component.currentTable.appendChild(layer);
+      return layer;
+    };
+    const at = (testid: string): number => {
+      const nodes = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('[data-testid]'));
+      return nodes.findIndex((el) => el.getAttribute('data-testid') === testid);
+    };
+
+    it('keeps the two runs apart, each on its own side of the board', () => {
+      lay('under');
+      lay('over');
+      fixture.detectChanges();
+
+      expect(component.underLayerViews()).toHaveLength(1);
+      expect(component.overLayerViews()).toHaveLength(1);
+    });
+
+    it('is written after the board, since a flattened wrapper paints in document order', () => {
+      lay('over');
+      fixture.detectChanges();
+
+      const board = (fixture.nativeElement as HTMLElement).querySelector('[data-testid="foreground-layers"]')
+        ?.previousElementSibling as HTMLElement;
+
+      expect(board.style.backgroundImage).toContain('url(');
+      expect(at('foreground-layers')).toBeGreaterThan(-1);
+    });
+
+    it('sits above the board and still short of the first thing laid on it', () => {
+      lay('over');
+      fixture.detectChanges();
+
+      const wrapper = (fixture.nativeElement as HTMLElement).querySelector(
+        '[data-testid="foreground-layers"]'
+      ) as HTMLElement;
+
+      expect(wrapper.getAttribute('data-layer-depth')).toBe(`translateZ(${Z_OFFSET_FOREGROUND_LAYERS_PX}px)`);
+      expect(Z_OFFSET_FOREGROUND_LAYERS_PX).toBeLessThan(Z_OFFSET_MASK_PX);
+    });
+
+    it('lets a pointer through, so a piece under it can still be taken hold of', () => {
+      lay('over');
+      fixture.detectChanges();
+
+      const wrapper = (fixture.nativeElement as HTMLElement).querySelector(
+        '[data-testid="foreground-layers"]'
+      ) as HTMLElement;
+
+      expect(wrapper.classList.contains('pointer-events-none')).toBe(true);
+    });
+
+    it('wears the same shape as the board, so a hex table keeps its outline', () => {
+      component.currentTable.gridType = GridType.HEX_VERTICAL;
+      lay('over');
+      fixture.detectChanges();
+
+      const wrapper = (fixture.nativeElement as HTMLElement).querySelector(
+        '[data-testid="foreground-layers"]'
+      ) as HTMLElement;
+
+      expect(wrapper.style.getPropertyValue('mask')).toBe(component.tableSurfaceStyle()['mask']);
+    });
+  });
+
+  describe('a piece standing on a face the table is not drawing', () => {
+    it('comes back to the floor rather than being drawn nowhere at all', () => {
+      const piece = GameCharacter.create('コマ', 1, '');
+      piece.location = { name: 'table', x: 100, y: 100, surface: 'north-wall' };
+      try {
+        fixture.detectChanges();
+
+        expect(component.charactersBySurface().floor.map((each) => each.identifier)).toContain(piece.identifier);
+        expect(component.charactersBySurface()['north-wall']).toEqual([]);
+      } finally {
+        piece.destroy();
+      }
+    });
+
+    it('leaves a piece on a board that another table is drawing to that board', () => {
+      const board = new WhiteBoard();
+      board.initialize();
+      const piece = GameCharacter.create('コマ', 1, '');
+      piece.location = { name: 'table', x: 100, y: 100, surface: board.identifier };
+      try {
+        fixture.detectChanges();
+
+        expect(component.charactersBySurface().floor.map((each) => each.identifier)).not.toContain(piece.identifier);
+      } finally {
+        piece.destroy();
+        board.destroy();
+      }
+    });
+
+    it('comes back from a board that is no longer on the table', () => {
+      const piece = GameCharacter.create('コマ', 1, '');
+      piece.location = { name: 'table', x: 100, y: 100, surface: 'a-board-that-went-away' };
+      try {
+        fixture.detectChanges();
+
+        expect(component.charactersBySurface().floor.map((each) => each.identifier)).toContain(piece.identifier);
+      } finally {
+        piece.destroy();
+      }
+    });
+  });
+
+  describe('saying what more a drag can be turned into', () => {
+    const hint = (): HTMLElement | null =>
+      (fixture.nativeElement as HTMLElement).querySelector('[data-testid="hold-hint"]');
+
+    const takeUp = (liftable: boolean) =>
+      TestBed.inject(HeldPieceService).take({
+        identifier: 'held',
+        x: 0,
+        y: 0,
+        widthPx: 50,
+        heightPx: 50,
+        altitude: 0,
+        gridSize: 50,
+        liftable,
+      });
+
+    it('says nothing while there is nothing in hand', () => {
+      fixture.detectChanges();
+
+      expect(hint()).toBeNull();
+    });
+
+    it('offers the footholds and the air to a piece held on the table', () => {
+      takeUp(true);
+
+      fixture.detectChanges();
+
+      expect(hint()?.textContent).toContain('ホイールで足場を上下に辿る');
+      expect(hint()?.textContent).toContain('Shift＋ホイールで高さを 1 マスずつ');
+    });
+
+    it('offers a piece held on a wall the footholds alone, having no height of its own', () => {
+      takeUp(false);
+
+      fixture.detectChanges();
+
+      expect(hint()?.textContent).toContain('ホイールで足場を上下に辿る');
+      expect(hint()?.textContent).not.toContain('Shift');
+    });
+
+    it('says nothing where there is no wheel to turn', () => {
+      vi.spyOn(TestBed.inject(ViewportService), 'isTouch').mockReturnValue(true);
+      takeUp(true);
+
+      fixture.detectChanges();
+
+      expect(hint()).toBeNull();
+    });
+
+    it('leaves the band to the planned move, which is already speaking from it', () => {
+      takeUp(true);
+      vi.spyOn(component, 'isPlanningMove').mockReturnValue(true);
+
+      fixture.detectChanges();
+
+      expect(hint()).toBeNull();
+    });
+
+    afterEach(() => TestBed.inject(HeldPieceService).letGo());
+  });
+
+  describe('saying how a move is worked out', () => {
+    const hint = (): HTMLElement | null =>
+      (fixture.nativeElement as HTMLElement).querySelector('[data-testid="move-plan-hint"]');
+
+    it('says nothing while no move is being worked out', () => {
+      fixture.detectChanges();
+
+      expect(hint()).toBeNull();
+    });
+
+    it('says how while one is', () => {
+      const plan = TestBed.inject(MovePlanService);
+      const piece = GameCharacter.create('コマ', 1, '');
+      piece.location = { name: 'table', x: 100, y: 100 };
+      DataElement.findElementByReference(piece.rootDataElement!, '移動')!.value = 3;
+      try {
+        expect(plan.begin(piece)).toBe(true);
+        fixture.detectChanges();
+
+        expect(hint()).not.toBeNull();
+      } finally {
+        plan.cancel();
+      }
+    });
+
+    it('keeps clear of the top of the screen, where the toolbars are pinned', () => {
+      const plan = TestBed.inject(MovePlanService);
+      const piece = GameCharacter.create('コマ', 1, '');
+      piece.location = { name: 'table', x: 100, y: 100 };
+      DataElement.findElementByReference(piece.rootDataElement!, '移動')!.value = 3;
+      try {
+        plan.begin(piece);
+        fixture.detectChanges();
+
+        const classes = hint()!.className.split(/\s+/);
+        expect(classes.some((name) => name.startsWith('top-'))).toBe(false);
+        expect(classes).toContain('bottom-28');
+      } finally {
+        plan.cancel();
+      }
+    });
+  });
+
+  describe('2D camera', () => {
+    const syncMode2d = (target: GameTableComponent): void => {
+      (target as unknown as { syncMode2d(): void }).syncMode2d();
+    };
+    const nextFrame = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+    beforeEach(() => {
+      (component.gestureService as unknown as { gameTableEl: HTMLElement }).gameTableEl = document.createElement('div');
+    });
+
+    it('straightens the table when entering 2D mode without locking later rotation', () => {
+      component.gestureService.viewRotateX = 35;
+      component.gestureService.viewRotateY = 12;
+      component.gestureService.viewRotateZ = 27;
+      component.currentTable.mode2d = true;
+
+      syncMode2d(component);
+
+      expect(component.gestureService.viewRotateX).toBe(0);
+      expect(component.gestureService.viewRotateY).toBe(0);
+      expect(component.gestureService.viewRotateZ).toBe(0);
+
+      component.gestureService.setTransform(0, 0, 0, 0, 0, 15);
+      syncMode2d(component);
+      expect(component.gestureService.viewRotateZ).toBe(15);
+    });
+
+    it('enters flat mode where this reader asked for it, whatever the table is showing', () => {
+      component.currentTable.mode2d = false;
+      component.gestureService.viewRotateX = 35;
+      TestBed.inject(ViewModePreferenceService).choose('flat');
+
+      syncMode2d(component);
+
+      expect(component.gestureService.tiltLocked).toBe(true);
+      expect(component.gestureService.viewRotateX).toBe(0);
+    });
+
+    it('uses scale-based zoom only while orthographic projection is enabled in 2D mode', async () => {
+      component.gestureService.viewPositionZ = -3000;
+      component.currentTable.mode2d = true;
+      component.currentTable.orthographicProjection = true;
+
+      syncMode2d(component);
+      await nextFrame();
+      expect(component.gestureService.orthographicProjection).toBe(true);
+      expect(
+        (component.gestureService as unknown as { gameTableEl: HTMLElement }).gameTableEl.style.transform
+      ).toContain('scale(0.500000)');
+
+      component.currentTable.orthographicProjection = false;
+      syncMode2d(component);
+      await nextFrame();
+      expect(component.gestureService.orthographicProjection).toBe(false);
+      expect(
+        (component.gestureService as unknown as { gameTableEl: HTMLElement }).gameTableEl.style.transform
+      ).not.toContain('scale(');
+    });
+
+    it('removes the perspective from the tabletop viewport', async () => {
+      component.currentTable.gridType = GridType.NONE;
+      component.currentTable.mode2d = true;
+      component.currentTable.orthographicProjection = true;
+
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(component.rootElementRef().nativeElement.style.perspective).toBe('none');
+    });
   });
 
   describe('characters', () => {
@@ -95,6 +663,404 @@ describe('GameTableComponent', () => {
 
       expect(names()).toContain('コマを作る…');
     });
+
+    it('groups table actions for the rotating menu without dropping legacy actions', () => {
+      const model = component.buildContextMenuModel(position);
+      const groupedActions = model.rotatingGroups.flatMap((group) => group.actions);
+      const legacyActions = model.actions.filter((action) => action.name.length > 0);
+
+      expect(model.rotatingGroups.map((group) => group.name)).toEqual([
+        'オブジェクト作成1',
+        'オブジェクト作成2',
+        'テーブル設定',
+      ]);
+      expect(groupedActions).toEqual(expect.arrayContaining(legacyActions));
+      expect(groupedActions).toHaveLength(legacyActions.length);
+    });
+
+    describe('gathering a party', () => {
+      const GATHER = 'この地点を中心にパーティを配置';
+      const made: (Party | GameCharacter)[] = [];
+
+      // The shared setup leaves this seat without a cursor, and a seat with no cursor is a
+      // player. The master has to be given one before the role can be written on it.
+      const beMaster = () => {
+        PeerCursor.createMyCursor();
+        PeerCursor.myCursor.role = PeerRole.GameMaster;
+      };
+
+      const makeParty = (name: string): Party => {
+        const party = new Party();
+        party.name = name;
+        party.initialize();
+        made.push(party);
+        const member = GameCharacter.create('花子', 1, '');
+        member.partyIdentifier = party.identifier;
+        member.setLocation('table');
+        made.push(member);
+        return party;
+      };
+
+      afterEach(() => {
+        PeerCursor.myCursor = null!;
+        for (const object of made.splice(0)) object.destroy();
+      });
+
+      it('offers it to the master, in both menus', () => {
+        beMaster();
+        makeParty('パーティA');
+
+        const model = component.buildContextMenuModel(position);
+
+        expect(model.actions.map((action) => action.name)).toContain(GATHER);
+        expect(model.rotatingGroups.map((group) => group.name)).toContain('同行');
+      });
+
+      it('keeps the two menus answering alike while it is offered', () => {
+        beMaster();
+        makeParty('パーティA');
+
+        const model = component.buildContextMenuModel(position);
+        const groupedActions = model.rotatingGroups.flatMap((group) => group.actions);
+        const legacyActions = model.actions.filter((action) => action.name.length > 0);
+
+        expect(groupedActions).toEqual(expect.arrayContaining(legacyActions));
+        expect(groupedActions).toHaveLength(legacyActions.length);
+      });
+
+      it('offers it to nobody else', () => {
+        makeParty('パーティA');
+
+        const model = component.buildContextMenuModel(position);
+
+        expect(model.actions.map((action) => action.name)).not.toContain(GATHER);
+        expect(model.rotatingGroups.map((group) => group.name)).not.toContain('同行');
+      });
+    });
+
+    it('splits the create items with a separator between the dice and the coin', () => {
+      const model = component.buildContextMenuModel(position);
+      const separatorIndexes = model.actions
+        .map((action, index) => (action.type === ContextMenuType.SEPARATOR ? index : -1))
+        .filter((index) => 0 <= index);
+
+      expect(separatorIndexes).toHaveLength(2);
+      expect(model.actions[separatorIndexes[0] - 1].name).toBe('ダイスを作成');
+      expect(model.actions[separatorIndexes[0] + 1].name).toBe('コインを作成');
+      expect(model.rotatingGroups[0].actions).toHaveLength(separatorIndexes[0]);
+    });
+  });
+
+  describe('holding the view still', () => {
+    const position = { x: 0, y: 0, z: 0 };
+    const LOCK_OFF = '☐ ビューを固定';
+    const LOCK_ON = '☑ ビューを固定';
+
+    /** The table settings group, which is where the entry lives in the rotating menu. */
+    const rotatingSettingNames = (): string[] => {
+      const model = component.buildContextMenuModel(position);
+      const group = model.rotatingGroups.find((entry) => entry.name === 'テーブル設定');
+      return (group?.actions ?? []).map((action) => action.name);
+    };
+    const flatNames = (): string[] => component.buildContextMenuActions(position).map((action) => action.name);
+
+    beforeEach(() => {
+      (component.gestureService as unknown as { gameTableEl: HTMLElement }).gameTableEl = document.createElement('div');
+    });
+
+    it('offers the lock from both menus in 2D, since either one may be the one in use', () => {
+      component.currentTable.mode2d = true;
+
+      expect(rotatingSettingNames()).toContain(LOCK_OFF);
+      expect(flatNames()).toContain(LOCK_OFF);
+    });
+
+    it('leaves it out in 3D, where nothing is standing on the screen', () => {
+      component.currentTable.mode2d = false;
+
+      expect(rotatingSettingNames()).not.toContain(LOCK_OFF);
+      expect(flatNames()).not.toContain(LOCK_OFF);
+    });
+
+    it('flips the lock when the entry is chosen, and says so the next time it is read', () => {
+      component.currentTable.mode2d = true;
+      const lock = TestBed.inject(ViewLockService);
+      const toggle = component
+        .buildContextMenuActions(position)
+        .find((action) => action.name === LOCK_OFF) as ContextMenuAction;
+
+      toggle.action?.();
+
+      expect(lock.locked()).toBe(true);
+      expect(component.gestureService.viewLocked).toBe(true);
+      expect(flatNames()).toContain(LOCK_ON);
+    });
+
+    it('withholds the way back to real size until the screen has been measured', () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.orthographicProjection = true;
+
+      expect(flatNames()).not.toContain('実寸に合わせ直す');
+
+      TestBed.inject(DisplayCalibrationService).calibrateFromCardRun(274, 1);
+
+      expect(flatNames()).toContain('実寸に合わせ直す');
+      expect(rotatingSettingNames()).toContain('実寸に合わせ直す');
+    });
+
+    it('reaches the camera once for a run of resizes, not once per event', async () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.orthographicProjection = true;
+      component.gestureService.orthographicProjection = true;
+      component.currentTable.gridSize = 50;
+      const calibration = TestBed.inject(DisplayCalibrationService);
+      calibration.calibrateFromCardRun(274, 1);
+      calibration.setRealSizeEnabled(true);
+      TestBed.inject(ViewLockService).set(true);
+      const internals = component as unknown as { _initialized: boolean; setGameTableGrid(): void };
+      vi.spyOn(internals, 'setGameTableGrid').mockImplementation(() => undefined);
+      internals._initialized = true;
+      const snap = vi.spyOn(component.gestureService, 'snapToViewPositionZ');
+      // Let the setting up settle first, so only the resizes are counted.
+      await fixture.whenStable();
+      snap.mockClear();
+
+      // A drag of the window edge reports a resize on every pixel it passes.
+      for (let i = 0; i < 20; i++) component.onWindowResize();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(snap).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the camera alone on a resize while nothing is locked to real size', async () => {
+      component.currentTable.mode2d = true;
+      TestBed.inject(DisplayCalibrationService).calibrateFromCardRun(274, 1);
+      const snap = vi.spyOn(component.gestureService, 'snapToViewPositionZ');
+
+      component.onWindowResize();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(snap).not.toHaveBeenCalled();
+    });
+
+    it('moves the board the moment the screen is measured, with nothing else to prompt it', async () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.gridSize = 50;
+      const internals = component as unknown as { _initialized: boolean; setGameTableGrid(): void };
+      vi.spyOn(internals, 'setGameTableGrid').mockImplementation(() => undefined);
+      internals._initialized = true;
+      component.currentTable.orthographicProjection = true;
+      const calibration = TestBed.inject(DisplayCalibrationService);
+      // Let the table settle first, so nothing but the calibration is left to move the board.
+      await fixture.whenStable();
+      expect(component.gestureService.viewPositionZ).toBe(0);
+
+      // What confirming the calibration modal does, and nothing besides.
+      calibration.calibrateFromCardRun(274, 1);
+      calibration.setRealSizeEnabled(true);
+      await fixture.whenStable();
+
+      expect(component.gestureService.viewPositionZ).toBeCloseTo(1155.1, 1);
+    });
+
+    it('follows a nudge of the scale, which is how the last of it is settled by eye', async () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.gridSize = 50;
+      const internals = component as unknown as { _initialized: boolean; setGameTableGrid(): void };
+      vi.spyOn(internals, 'setGameTableGrid').mockImplementation(() => undefined);
+      internals._initialized = true;
+      component.currentTable.orthographicProjection = true;
+      const calibration = TestBed.inject(DisplayCalibrationService);
+      calibration.calibrateFromCardRun(274, 1);
+      calibration.setRealSizeEnabled(true);
+      await fixture.whenStable();
+      const before = component.gestureService.viewPositionZ;
+      expect(before).toBeGreaterThan(0);
+
+      calibration.nudge(1);
+      await fixture.whenStable();
+
+      expect(component.gestureService.viewPositionZ).toBeGreaterThan(before);
+    });
+
+    it('follows the width a square is meant to measure being changed', async () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.gridSize = 50;
+      const internals = component as unknown as { _initialized: boolean; setGameTableGrid(): void };
+      vi.spyOn(internals, 'setGameTableGrid').mockImplementation(() => undefined);
+      internals._initialized = true;
+      component.currentTable.orthographicProjection = true;
+      const calibration = TestBed.inject(DisplayCalibrationService);
+      calibration.calibrateFromCardRun(274, 1);
+      calibration.setRealSizeEnabled(true);
+      await fixture.whenStable();
+      const before = component.gestureService.viewPositionZ;
+      expect(before).toBeGreaterThan(0);
+
+      // A wider square means a nearer camera; the setting is this screen's, so no table event
+      // announces it.
+      TestBed.inject(TabletopDisplayService).set({ cellMm: 40 });
+      await fixture.whenStable();
+
+      expect(component.gestureService.viewPositionZ).toBeGreaterThan(before);
+    });
+
+    it('hears the lock being set from the settings panel, not only from the menus', async () => {
+      component.currentTable.mode2d = true;
+      // Settle the table first: otherwise its own pending event would carry the lock across,
+      // and this would pass without the board ever having listened to the setting.
+      await fixture.whenStable();
+      expect(component.gestureService.viewLocked).toBe(false);
+
+      TestBed.inject(ViewLockService).set(true);
+      await fixture.whenStable();
+
+      expect(component.gestureService.viewLocked).toBe(true);
+    });
+
+    it('takes the lock with it when the view is put back on real size', () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.orthographicProjection = true;
+      component.gestureService.orthographicProjection = true;
+      component.currentTable.gridSize = 50;
+      TestBed.inject(DisplayCalibrationService).calibrateFromCardRun(274, 1);
+      // Marking it ready wakes the grid redraw, which has no canvas to draw on here.
+      const internals = component as unknown as { _initialized: boolean; setGameTableGrid(): void };
+      vi.spyOn(internals, 'setGameTableGrid').mockImplementation(() => undefined);
+      internals._initialized = true;
+      const snap = component
+        .buildContextMenuActions(position)
+        .find((action) => action.name === '実寸に合わせ直す') as ContextMenuAction;
+
+      snap.action?.();
+
+      expect(TestBed.inject(ViewLockService).locked()).toBe(true);
+      // 3000 * (1 - 1/1.626): the depth at which one square measures an inch.
+      expect(component.gestureService.viewPositionZ).toBeCloseTo(1155.1, 1);
+    });
+
+    it('offers no way back to real size under perspective, where there is no one scale', () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.orthographicProjection = false;
+      TestBed.inject(DisplayCalibrationService).calibrateFromCardRun(274, 1);
+
+      expect(flatNames()).not.toContain('実寸に合わせ直す');
+
+      TestBed.inject(TabletopDisplayService).set({ orthographicProjection: true });
+
+      expect(flatNames()).toContain('実寸に合わせ直す');
+    });
+
+    it('holds the camera still under perspective, however the snap is reached', async () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.gridSize = 50;
+      const internals = component as unknown as { _initialized: boolean; setGameTableGrid(): void };
+      vi.spyOn(internals, 'setGameTableGrid').mockImplementation(() => undefined);
+      internals._initialized = true;
+      const calibration = TestBed.inject(DisplayCalibrationService);
+      calibration.calibrateFromCardRun(274, 1);
+      calibration.setRealSizeEnabled(true);
+      await fixture.whenStable();
+      // syncMode2d leaves the service flat only when the table asks for it, which it has not.
+      expect(component.gestureService.orthographicProjection).toBe(false);
+
+      component.onWindowResize();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(component.gestureService.viewPositionZ).toBe(0);
+    });
+  });
+
+  describe('table context menu display', () => {
+    const menuPosition = { x: 320, y: 240, z: 0 };
+    const objectPosition = { x: 10, y: 20, z: 0 };
+
+    it('opens the rotating interface directly on an empty 2D table when enabled', () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.tabletopMenuStyle = 'radial';
+      component.currentTable.radialMenuRotationSpeed = 8;
+      const menus = TestBed.inject(ContextMenuService);
+      const openRotating = vi.spyOn(menus, 'openRadial').mockImplementation(() => undefined);
+      const openLegacy = vi.spyOn(menus, 'open').mockImplementation(() => undefined);
+
+      component.openTableContextMenu(menuPosition, objectPosition);
+
+      expect(openRotating).toHaveBeenCalledWith(
+        expect.objectContaining({ x: 320, y: 240 }),
+        expect.any(Array),
+        expect.any(Array),
+        component.currentTable.name,
+        true,
+        8,
+        1
+      );
+      expect(openLegacy).not.toHaveBeenCalled();
+    });
+
+    it('opens the four-direction launcher on an empty 2D table when the style asks for it', () => {
+      component.currentTable.mode2d = true;
+      component.currentTable.tabletopMenuStyle = 'four-way';
+      component.currentTable.radialMenuRotationSpeed = 6;
+      const menus = TestBed.inject(ContextMenuService);
+      const openRotating = vi.spyOn(menus, 'openRadial').mockImplementation(() => undefined);
+      const openLegacy = vi.spyOn(menus, 'open').mockImplementation(() => undefined);
+
+      component.openTableContextMenu(menuPosition, objectPosition);
+
+      expect(openRotating).toHaveBeenCalledWith(
+        expect.objectContaining({ x: 320, y: 240 }),
+        expect.any(Array),
+        expect.any(Array),
+        component.currentTable.name,
+        false,
+        6,
+        1
+      );
+      expect(openLegacy).not.toHaveBeenCalled();
+    });
+
+    it('keeps the ordinary menu on a 2D table that never asked for another', () => {
+      component.currentTable.mode2d = true;
+      const menus = TestBed.inject(ContextMenuService);
+      const openRotating = vi.spyOn(menus, 'openRadial').mockImplementation(() => undefined);
+      const openLegacy = vi.spyOn(menus, 'open').mockImplementation(() => undefined);
+
+      component.openTableContextMenu(menuPosition, objectPosition);
+
+      expect(openLegacy).toHaveBeenCalled();
+      expect(openRotating).not.toHaveBeenCalled();
+    });
+
+    it('keeps the existing vertical table menu outside 2D mode', () => {
+      component.currentTable.mode2d = false;
+      component.currentTable.tabletopMenuStyle = 'four-way';
+      const menus = TestBed.inject(ContextMenuService);
+      const openRotating = vi.spyOn(menus, 'openRadial').mockImplementation(() => undefined);
+      const openLegacy = vi.spyOn(menus, 'open').mockImplementation(() => undefined);
+
+      component.openTableContextMenu(menuPosition, objectPosition);
+
+      expect(openLegacy).toHaveBeenCalledWith(
+        expect.objectContaining({ x: 320, y: 240 }),
+        expect.any(Array),
+        component.currentTable.name
+      );
+      expect(openRotating).not.toHaveBeenCalled();
+    });
+
+    it('opens the four-way menu for a reader whose own seat lies flat over a table that does not', () => {
+      component.currentTable.mode2d = false;
+      component.currentTable.tabletopMenuStyle = 'radial';
+      TestBed.inject(ViewModePreferenceService).choose('flat');
+      const menus = TestBed.inject(ContextMenuService);
+      const openRotating = vi.spyOn(menus, 'openRadial').mockImplementation(() => undefined);
+      const openLegacy = vi.spyOn(menus, 'open').mockImplementation(() => undefined);
+
+      component.openTableContextMenu(menuPosition, objectPosition);
+
+      expect(openRotating).toHaveBeenCalled();
+      expect(openLegacy).not.toHaveBeenCalled();
+    });
   });
 
   describe('tableSurfaceStyle', () => {
@@ -130,6 +1096,61 @@ describe('GameTableComponent', () => {
       expect(style?.['-webkit-mask']).toBe(style?.mask);
       expect(borderStyle?.background).toContain('data:image/svg+xml');
     });
+
+    it('keeps the hex outline when only something standing on the table changes', async () => {
+      const table = component.currentTable;
+      table.width = 6;
+      table.height = 5;
+      table.gridSize = 50;
+      table.gridType = GridType.HEX_VERTICAL;
+      await Promise.resolve();
+      const style = component.tableSurfaceStyle();
+      const borderStyle = component.tableSurfaceBorderStyle();
+
+      perfCounters.enabled = true;
+      perfCounters.clear();
+      const terrain = Terrain.create('crate', 1, 1, 1, '', '');
+      table.appendChild(terrain);
+      await Promise.resolve();
+
+      try {
+        expect(component.tableSurfaceStyle()).toBe(style);
+        expect(component.tableSurfaceBorderStyle()).toBe(borderStyle);
+        expect(perfCounters.drain().get(PERF_HEX_MASK_SVG) ?? 0).toBe(0);
+      } finally {
+        perfCounters.enabled = false;
+        perfCounters.clear();
+        terrain.destroy();
+      }
+    });
+
+    it('builds the hex outline again for the size the table has now', async () => {
+      const table = component.currentTable;
+      table.width = 6;
+      table.height = 5;
+      table.gridType = GridType.HEX_VERTICAL;
+      table.gridSize = 0;
+      await Promise.resolve();
+      const atNothing = component.tableSurfaceStyle();
+
+      table.gridSize = 50;
+      await Promise.resolve();
+
+      expect(component.tableSurfaceStyle()).not.toBe(atNothing);
+      expect(component.tableSurfaceStyle().width).toBe(`${(50 / Math.sqrt(3)) * 2 + (50 / Math.sqrt(3)) * 1.5 * 5}px`);
+    });
+  });
+
+  describe('the pools on its walls', () => {
+    it('measures a pool from the end each wall is drawn from', () => {
+      const pool = { localX: 100, localY: 40, radiusX: 80, radiusY: 80, color: '#ffffff', intensity: 1 };
+      const at = (surface: TableSurface) => component['wallPoolStyleFor'](pool, surface, 1000)['mask-image'];
+
+      expect(at('north-wall')).toContain('at 100px');
+      expect(at('east-wall')).toContain('at 100px');
+      expect(at('south-wall')).toContain('at 900px');
+      expect(at('west-wall')).toContain('at 900px');
+    });
   });
 
   describe('wallBackground', () => {
@@ -145,6 +1166,249 @@ describe('GameTableComponent', () => {
       expect(bg.surfaceBackground).toBe('url(data:image/png;base64,AAA), url(blob:wall)');
       expect(bg.surfaceBackgroundSize).toBe('100% 100%, 100% 100%');
       expect(bg.surfaceBackgroundRepeat).toBe('no-repeat, no-repeat');
+    });
+  });
+
+  describe('walls', () => {
+    function picture(url: string): string {
+      return TestBed.inject(ImageStorage).add(url).identifier;
+    }
+
+    it('raises only the walls that are switched on and have a picture', async () => {
+      const table = component.currentTable;
+      table.showNorthWall = true;
+      table.northWallImageIdentifier = picture('blob:north');
+      table.showSouthWall = true;
+      table.showEastWall = false;
+      table.eastWallImageIdentifier = picture('blob:east');
+      table.showWestWall = true;
+      table.westWallImageIdentifier = picture('blob:west');
+      await Promise.resolve();
+
+      const walls = component.activeWalls();
+
+      expect(walls.map((wall) => wall.surface)).toEqual(['north-wall', 'west-wall']);
+      expect(walls[0]).toMatchObject({
+        containerClass: 'top-0 left-0',
+        containerTransform: 'translateY(-100%) rotateX(90deg) rotateZ(180deg) scaleX(-1)',
+        containerOrigin: '50% 100%',
+        widthPx: table.width * table.gridSize,
+        heightPx: table.wallHeight * table.gridSize,
+        surfaceBackground: 'url(blob:north)',
+      });
+      expect(walls[1]).toMatchObject({
+        containerClass: 'top-0 left-0',
+        containerOrigin: '0% 0%',
+        widthPx: table.height * table.gridSize,
+        heightPx: table.wallHeight * table.gridSize,
+        surfaceBackground: 'url(blob:west)',
+      });
+    });
+
+    it('lays a rasterised grid over each wall while the table shows its grid', async () => {
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+        () => new Proxy({}, { get: () => () => undefined, set: () => true }) as unknown as RenderingContext
+      );
+      vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,GRID');
+      const table = component.currentTable;
+      table.gridShow = true;
+      table.showSouthWall = true;
+      table.southWallImageIdentifier = picture('blob:south');
+      await Promise.resolve();
+
+      const [south] = component.activeWalls();
+
+      expect(south.surface).toBe('south-wall');
+      expect(south.surfaceBackground).toBe('url(data:image/png;base64,GRID), url(blob:south)');
+      expect(south.surfaceBackgroundSize).toBe('100% 100%, 100% 100%');
+    });
+
+    it('describes each face by the edge it runs along and the way it looks', () => {
+      const table = component.currentTable;
+      table.width = 20;
+      table.height = 10;
+      table.gridSize = 50;
+      table.wallHeight = 4;
+
+      expect(component['wallFaceFor']('north-wall')).toEqual({
+        ax: 0,
+        ay: 0,
+        bx: 1000,
+        by: 0,
+        nx: 0,
+        ny: 1,
+        heightPx: 200,
+      });
+      expect(component['wallFaceFor']('south-wall')).toEqual({
+        ax: 0,
+        ay: 500,
+        bx: 1000,
+        by: 500,
+        nx: 0,
+        ny: -1,
+        heightPx: 200,
+      });
+      expect(component['wallFaceFor']('west-wall')).toEqual({
+        ax: 0,
+        ay: 0,
+        bx: 0,
+        by: 500,
+        nx: 1,
+        ny: 0,
+        heightPx: 200,
+      });
+      expect(component['wallFaceFor']('east-wall')).toEqual({
+        ax: 1000,
+        ay: 0,
+        bx: 1000,
+        by: 500,
+        nx: -1,
+        ny: 0,
+        heightPx: 200,
+      });
+      expect(component['wallFaceFor']('floor')).toBeNull();
+    });
+
+    it('hands the same wall views back while nothing changes', async () => {
+      const table = component.currentTable;
+      table.showNorthWall = true;
+      table.northWallImageIdentifier = picture('blob:north');
+      await Promise.resolve();
+
+      const views = component['wallViews']();
+
+      expect(views.map((view) => view.wall.surface)).toEqual(['north-wall']);
+      expect(views[0].pools).toEqual([]);
+      expect(views[0].silhouettes).toEqual([]);
+      expect(component['wallViews']()).toBe(views);
+    });
+
+    it('has no pools or silhouettes on a wall while nothing is lit', () => {
+      expect(component['wallPoolsFor']('north-wall')).toEqual([]);
+      expect(component['wallSilhouettesFor']('east-wall')).toEqual([]);
+      expect(component['wallBaseFilter']()).toBeNull();
+    });
+  });
+
+  describe('grid faces', () => {
+    it('rasterises a face once and hands the same picture back for the same geometry', () => {
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+        () => new Proxy({}, { get: () => () => undefined, set: () => true }) as unknown as RenderingContext
+      );
+      const encode = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,GRID');
+      const table = component.currentTable;
+
+      const first = component['gridFaces'].dataUrl(table, 500, 200, 0, 0, 'N', null);
+      const again = component['gridFaces'].dataUrl(table, 500, 200, 0, 0, 'N', null);
+      const other = component['gridFaces'].dataUrl(table, 500, 200, 0, 0, 'S', [-1, 0, 0, 1]);
+      const face = component['gridFaces'].dataUrl(table, 100, 150, 0, 50, 'N', null);
+      const faceAgain = component['gridFaces'].dataUrl(table, 100, 150, 0, 50, 'N', null);
+
+      expect(first).toBe('data:image/png;base64,GRID');
+      expect(again).toBe(first);
+      expect(other).toBe('data:image/png;base64,GRID');
+      expect(faceAgain).toBe(face);
+      expect(encode).toHaveBeenCalledTimes(3);
+    });
+
+    it('rasterises again once the grid colour changes', () => {
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+        () => new Proxy({}, { get: () => () => undefined, set: () => true }) as unknown as RenderingContext
+      );
+      const encode = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,GRID');
+      const table = component.currentTable;
+
+      component['gridFaces'].dataUrl(table, 500, 200, 0, 0, 'N', null);
+      table.gridColor = '#ff0000ff';
+      component['gridFaces'].dataUrl(table, 500, 200, 0, 0, 'N', null);
+
+      expect(encode).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('beam grids', () => {
+    function terrainOn(surface: string, isGrid: boolean): Terrain {
+      const terrain = Terrain.create('梁', 2, 3, 1, '', '');
+      terrain.location.surface = surface;
+      terrain.isGrid = isGrid;
+      component.currentTable.appendChild(terrain);
+      return terrain;
+    }
+
+    it('lists a grid for each gridded terrain that hangs on a wall', async () => {
+      const table = component.currentTable;
+      table.gridShow = true;
+      terrainOn('floor', true);
+      const hung = terrainOn('north-wall', true);
+      terrainOn('east-wall', false);
+      await Promise.resolve();
+
+      const tops = component.beamTopGrids();
+      const faces = component.beamWallGrids();
+
+      expect(tops.map((grid) => grid.identifier)).toEqual([hung.identifier]);
+      expect(faces.map((grid) => grid.identifier)).toEqual([hung.identifier]);
+      expect(faces[0]).toMatchObject({ width: 2 * table.gridSize, height: 3 * table.gridSize });
+      expect(faces[0].matrix3d).toMatch(/^matrix3d\(/);
+    });
+
+    it('lists none while the table hides its grid', async () => {
+      const table = component.currentTable;
+      table.gridShow = false;
+      terrainOn('north-wall', true);
+      await Promise.resolve();
+
+      expect(component.beamTopGrids()).toEqual([]);
+      expect(component.beamWallGrids()).toEqual([]);
+    });
+  });
+
+  describe('camera glide', () => {
+    it('eases the table to the focus and takes the easing off again', () => {
+      vi.useFakeTimers();
+      fixture.detectChanges();
+      const tableEl = component.gameTable().nativeElement;
+
+      TestBed.inject(SelectionSignalService).focusCoordinate.set({ x: 100, y: 100, timestamp: 1 });
+      fixture.detectChanges();
+      vi.advanceTimersByTime(50);
+      expect(tableEl.style.transition).toBe('0.2s ease-out');
+
+      vi.advanceTimersByTime(100);
+      expect(tableEl.style.transition).toBe('');
+      vi.useRealTimers();
+    });
+
+    it('counts the view as written out again once the glide has landed', () => {
+      vi.useFakeTimers();
+      fixture.detectChanges();
+      const tableEl = component.gameTable().nativeElement;
+      const coordinates = component['coordinateService'];
+
+      TestBed.inject(SelectionSignalService).focusCoordinate.set({ x: 100, y: 100, timestamp: 3 });
+      fixture.detectChanges();
+      vi.advanceTimersByTime(149);
+      const whileGliding = coordinates.tabletopTransformVersion();
+
+      vi.advanceTimersByTime(1);
+      expect(tableEl.style.transition).toBe('');
+      expect(coordinates.tabletopTransformVersion()).toBeGreaterThan(whileGliding);
+      vi.useRealTimers();
+    });
+
+    it('drops the glide when the table goes before it lands', () => {
+      vi.useFakeTimers();
+      fixture.detectChanges();
+      const tableEl = component.gameTable().nativeElement;
+
+      TestBed.inject(SelectionSignalService).focusCoordinate.set({ x: 100, y: 100, timestamp: 2 });
+      fixture.detectChanges();
+      fixture.destroy();
+      vi.advanceTimersByTime(200);
+
+      expect(tableEl.style.transition).toBe('');
+      expect(vi.getTimerCount()).toBe(0);
+      vi.useRealTimers();
     });
   });
 });

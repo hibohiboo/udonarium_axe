@@ -63,6 +63,25 @@ export const DARKNESS_LAYER_MAX = 2048;
  */
 let scratch: { canvas: OffscreenCanvas; context: DarknessCanvas } | null = null;
 
+/**
+ * Whether a context that came back can actually be drawn on.
+ *
+ * Asking for a two-dimensional context is meant to answer with one or with nothing, but a
+ * context can come back that is neither: an object with none of the drawing on it. Taken at
+ * face value it fails at the first stroke, a long way from wherever it was handed over.
+ */
+function canDraw(context: unknown): context is DarknessCanvas {
+  const candidate = context as Partial<DarknessCanvas> | null;
+  return typeof candidate?.fillRect === 'function' && typeof candidate?.drawImage === 'function';
+}
+
+/**
+ * A blank surface of the given size to paint the shroud on.
+ *
+ * One offscreen surface is kept and cleared between calls, so what this returns is only good
+ * until the next call. Falls back to a page canvas, and gives null for a size under one pixel
+ * or where nothing can be drawn.
+ */
 export function defaultDarknessLayer(width: number, height: number): DarknessCanvas | null {
   if (width < 1 || height < 1) return null;
 
@@ -70,8 +89,11 @@ export function defaultDarknessLayer(width: number, height: number): DarknessCan
     if (!scratch || scratch.canvas.width !== width || scratch.canvas.height !== height) {
       const canvas = new OffscreenCanvas(width, height);
       const created = canvas.getContext('2d');
-      if (!created) return null;
-      scratch = { canvas, context: created as unknown as DarknessCanvas };
+      if (!canDraw(created)) {
+        scratch = null;
+        return domDarknessLayer(width, height);
+      }
+      scratch = { canvas, context: created };
     } else {
       // Re-assigning the size would clear it; at the same size, clear it explicitly.
       const reused = scratch.canvas.getContext('2d');
@@ -82,15 +104,25 @@ export function defaultDarknessLayer(width: number, height: number): DarknessCan
     context.globalAlpha = 1;
     return context;
   }
-  if (typeof document !== 'undefined') {
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    return (canvas.getContext('2d') as unknown as DarknessCanvas) ?? null;
-  }
-  return null;
+  return domDarknessLayer(width, height);
 }
 
+function domDarknessLayer(width: number, height: number): DarknessCanvas | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const created = canvas.getContext('2d');
+  return canDraw(created) ? created : null;
+}
+
+/**
+ * Paints a vision plan's darkness and light over the board in a video frame.
+ *
+ * The shroud is filled on its own surface, capped at `DARKNESS_LAYER_MAX` on its longest side,
+ * then carved away where the plan reveals, stretched over the board, and the lights' colour is
+ * added on top. Nothing is drawn when the board has no size or no surface can be made.
+ */
 export function paintReplayDarkness(
   ctx: DarknessCanvas,
   plan: OverlayPlan,

@@ -1,7 +1,7 @@
 import { inject, Injectable } from '@angular/core';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { KeyboardInsetService } from '@axe/application/ui/keyboard-inset.service';
 import { AppConfigService } from '@axe/composition/app-config.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { initializeNetworkMessaging } from '@axe/core/network/network-messaging';
 import { AudioPlayer } from '@axe/core/storage/audio-player';
 import { AudioSharingSystem } from '@axe/core/storage/audio-sharing-system';
@@ -12,7 +12,10 @@ import { ImageFile } from '@axe/core/storage/image-file';
 import { ImageSharingSystem } from '@axe/core/storage/image-sharing-system';
 import { ImageStorage } from '@axe/core/storage/image-storage';
 import { ObjectSynchronizer } from '@axe/core/sync/object-synchronizer';
+import { keepFocusFromZoomingOnAppleTouch } from '@axe/core/util/apple-input-zoom';
 import { Alarm } from '@axe/domain/alarm/alarm';
+import { createDefaultStatusAilments } from '@axe/domain/character/builtin-status-ailments';
+import { StatusAilmentCatalog } from '@axe/domain/character/status-ailment-catalog';
 import { ChatTabList } from '@axe/domain/chat/chat-tab-list';
 import { DataSummarySetting } from '@axe/domain/data/data-summary-setting';
 import { MarkDown } from '@axe/domain/data/mark-down';
@@ -20,6 +23,8 @@ import { DiceBot } from '@axe/domain/dice/dice-bot';
 import { createDefaultEffectPresets } from '@axe/domain/effect/builtin-effect-presets';
 import { EffectPresetSet } from '@axe/domain/effect/effect-preset-set';
 import { AudioTag } from '@axe/domain/media/audio-tag';
+import { createDefaultCutIns } from '@axe/domain/media/builtin-cut-ins';
+import { registerBuiltinMaterials } from '@axe/domain/media/builtin-materials';
 import { CutInLauncher } from '@axe/domain/media/cut-in-launcher';
 import { Jukebox } from '@axe/domain/media/jukebox';
 import { Playlist } from '@axe/domain/media/playlist';
@@ -34,6 +39,9 @@ import { VnStage } from '@axe/domain/visual-novel/vn-stage';
 import { Vote } from '@axe/domain/vote/vote';
 import { NgSelectConfig } from '@ng-select/ng-select';
 
+const PREFETCH_IDLE_TIMEOUT_MS = 5000;
+const PREFETCH_FALLBACK_DELAY_MS = 1500;
+
 @Injectable({ providedIn: 'root' })
 export class AppInitializationService {
   private readonly fileArchiver = inject(FileArchiver);
@@ -46,9 +54,17 @@ export class AppInitializationService {
   private readonly turnState = inject(TurnState);
   private readonly config = inject(Config);
   private readonly dataSummarySetting = inject(DataSummarySetting);
+  private readonly statusAilmentCatalog = inject(StatusAilmentCatalog);
   private readonly ngSelectConfig = inject(NgSelectConfig);
   private readonly keyboardInset = inject(KeyboardInsetService);
 
+  /**
+   * Starts the app once at launch, before any room is used.
+   *
+   * Sets up networking, file sharing and object sync, then creates the room-wide objects every
+   * room starts with (dice bot, jukebox, default chat tabs, preset sounds, effects, cut-ins and
+   * status ailments) and the local user's cursor, restoring a stored identity if there is one.
+   */
   initialize(): void {
     initializeNetworkMessaging();
     this.fileArchiver.initialize();
@@ -58,6 +74,7 @@ export class AppInitializationService {
     this.appConfigService.initialize();
     this.pointerDeviceService.initialize();
     this.keyboardInset.initialize();
+    keepFocusFromZoomingOnAppleTouch(document, navigator);
     this.ngSelectConfig.appendTo = 'body';
 
     this.tableSelecter.initialize();
@@ -70,6 +87,9 @@ export class AppInitializationService {
     this.initializeChatTabs();
     this.initializeAudioPresets();
     this.initializeEffectPresets();
+    this.initializeCutIns();
+    this.initializeMaterials();
+    this.initializeStatusAilments();
     this.initializePeerCursor();
   }
 
@@ -79,13 +99,27 @@ export class AppInitializationService {
     void EffectPresetSet;
   }
 
+  private initializeCutIns(): void {
+    createDefaultCutIns(this.imageStorage);
+  }
+
+  private initializeMaterials(): void {
+    registerBuiltinMaterials(this.imageStorage);
+  }
+
+  private initializeStatusAilments(): void {
+    createDefaultStatusAilments(this.statusAilmentCatalog);
+  }
+
   private initializeDomainObjects(): void {
     const diceBot = new DiceBot('DiceBot');
     diceBot.initialize();
-    DiceBot.getHelpMessage('');
+    prefetchWhenIdle(() => void DiceBot.ensureLoaded());
 
     const jukebox = new Jukebox('Jukebox');
     jukebox.initialize();
+    AudioSharingSystem.instance.preferredIdentifiers = () =>
+      jukebox.audioIdentifier.length > 0 ? [jukebox.audioIdentifier] : [];
 
     const playlist = new Playlist('Playlist');
     playlist.initialize();
@@ -141,6 +175,12 @@ export class AppInitializationService {
       healSmall: './assets/sounds/soundeffect-lab/heal-small.mp3',
       healMedium: './assets/sounds/soundeffect-lab/heal-medium.mp3',
       healLarge: './assets/sounds/soundeffect-lab/heal-large.mp3',
+      mechDamageSmall: './assets/sounds/otologic/mech-damage-small.mp3',
+      mechDamageMedium: './assets/sounds/otologic/mech-damage-medium.mp3',
+      mechDamageLarge: './assets/sounds/otologic/mech-damage-large.mp3',
+      mechHealSmall: './assets/sounds/soundeffect-lab/mech-heal-small.mp3',
+      mechHealMedium: './assets/sounds/soundeffect-lab/mech-heal-medium.mp3',
+      mechHealLarge: './assets/sounds/soundeffect-lab/mech-heal-large.mp3',
       cardDraw: './assets/sounds/soundeffect-lab/card-turn-over1.mp3',
       cardPick: './assets/sounds/soundeffect-lab/shoulder-touch1.mp3',
       cardPut: './assets/sounds/soundeffect-lab/book-stack1.mp3',
@@ -221,6 +261,13 @@ export class AppInitializationService {
       holyBlade: './assets/sounds/soundeffect-lab/holy-blade.mp3',
       missileLaunch: './assets/sounds/soundeffect-lab/missile-launch.mp3',
       rocketLaunch: './assets/sounds/soundeffect-lab/rocket-launch.mp3',
+      flashImpact: './assets/sounds/soundeffect-lab/flash-impact.mp3',
+      chatPageTurnLong: './assets/sounds/otologic/chat-page-turn-long.mp3',
+      chatPageTurnShort: './assets/sounds/otologic/chat-page-turn-short.mp3',
+      chatBubble: './assets/sounds/otologic/chat-bubble.mp3',
+      chatCyber: './assets/sounds/otologic/chat-cyber.mp3',
+      chatNotify1: './assets/sounds/otologic/chat-notify1.mp3',
+      chatNotify2: './assets/sounds/otologic/chat-notify2.mp3',
     };
 
     for (const key of Object.keys(soundMap) as SoundKey[]) {
@@ -243,4 +290,10 @@ export class AppInitializationService {
       PeerCursor.myCursor.role = normalizePeerRole(storedIdentity.role);
     }
   }
+}
+
+function prefetchWhenIdle(load: () => void): void {
+  const idleCallback = globalThis.requestIdleCallback;
+  if (typeof idleCallback === 'function') idleCallback(load, { timeout: PREFETCH_IDLE_TIMEOUT_MS });
+  else setTimeout(load, PREFETCH_FALLBACK_DELAY_MS);
 }

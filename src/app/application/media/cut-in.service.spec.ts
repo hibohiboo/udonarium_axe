@@ -1,11 +1,15 @@
 import { TestBed } from '@angular/core/testing';
 import { CutInService } from '@axe/application/media/cut-in.service';
+import { IPeerContext } from '@axe/core/network/peer-context';
+import { resetPeerContextProvider, setPeerContextProvider } from '@axe/core/network/peer-context-source';
 import { AudioFile } from '@axe/core/storage/audio-file';
 import { AudioStorage } from '@axe/core/storage/audio-storage';
-import { ObjectStore } from '@axe/core/sync/object-store';
+import { ChatTab } from '@axe/domain/chat/chat-tab';
+import { ChatTabList } from '@axe/domain/chat/chat-tab-list';
 import { CutIn } from '@axe/domain/media/cut-in';
 import { CutInLauncher } from '@axe/domain/media/cut-in-launcher';
 import { Jukebox } from '@axe/domain/media/jukebox';
+import { GameTable } from '@axe/domain/tabletop/game-table';
 import { TEST_PROVIDERS } from '@axe/testing/test-providers';
 
 describe('CutInService.activateFromChatText()', () => {
@@ -17,9 +21,6 @@ describe('CutInService.activateFromChatText()', () => {
     TestBed.configureTestingModule({ providers: [...TEST_PROVIDERS] });
 
     // Clean store
-    const store = ObjectStore.instance;
-    store.getObjects().forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
 
     launcher = new CutInLauncher('CutInLauncher');
     launcher.initialize();
@@ -105,5 +106,148 @@ describe('CutInService.activateFromChatText()', () => {
 
     expect(soundSpy).not.toHaveBeenCalled();
     expect(startSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('CutInService.launchForTable()', () => {
+  let service: CutInService;
+  let launcher: CutInLauncher;
+  let table: GameTable;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({ providers: [...TEST_PROVIDERS] });
+
+    launcher = new CutInLauncher('CutInLauncher');
+    launcher.initialize();
+    new Jukebox('Jukebox').initialize();
+
+    table = new GameTable();
+    table.initialize();
+
+    service = TestBed.inject(CutInService);
+  });
+
+  function makeCutIn(name: string): CutIn {
+    const cutIn = new CutIn();
+    cutIn.initialize();
+    cutIn.name = name;
+    return cutIn;
+  }
+
+  it('plays nothing for a table that asks for nothing', () => {
+    const spy = vi.spyOn(launcher, 'startCutIn');
+
+    expect(service.launchForTable(table)).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('plays the only cut-in the table asks for', () => {
+    const cutIn = makeCutIn('開幕');
+    table.cutInIdentifiers = cutIn.identifier;
+    const spy = vi.spyOn(launcher, 'startCutIn').mockImplementation(() => {});
+
+    expect(service.launchForTable(table)).toBe(true);
+    expect(spy).toHaveBeenCalledWith(cutIn, '');
+  });
+
+  it('draws the one the roll names when the table asks for several', () => {
+    const first = makeCutIn('一番目');
+    const second = makeCutIn('二番目');
+    table.cutInIdentifiers = `${first.identifier},${second.identifier}`;
+    const spy = vi.spyOn(launcher, 'startCutIn').mockImplementation(() => {});
+
+    service.launchForTable(table, () => 1);
+
+    expect(spy).toHaveBeenCalledWith(second, '');
+  });
+
+  it('plays nothing once the cut-in it names is gone', () => {
+    const cutIn = makeCutIn('消えた');
+    table.cutInIdentifiers = cutIn.identifier;
+    cutIn.destroy();
+    const spy = vi.spyOn(launcher, 'startCutIn');
+
+    expect(service.launchForTable(table)).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('what a line arriving sets off', () => {
+  let launcher: CutInLauncher;
+  let tab: ChatTab;
+
+  function makeCutIn(name: string): CutIn {
+    const cutIn = new CutIn();
+    cutIn.initialize();
+    cutIn.name = name;
+    cutIn.chatActivate = true;
+    return cutIn;
+  }
+
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({ providers: [...TEST_PROVIDERS] });
+
+    setPeerContextProvider({
+      peerContext: { userId: 'me', peerId: 'me/peer' } as IPeerContext,
+      peerContexts: [],
+      peerIds: [],
+      peerId: 'me/peer',
+    });
+
+    launcher = new CutInLauncher('CutInLauncher');
+    launcher.initialize();
+    new Jukebox('Jukebox').initialize();
+    ChatTabList.instance.initialize();
+    tab = new ChatTab();
+    tab.initialize();
+    ChatTabList.instance.appendChild(tab);
+
+    TestBed.inject(CutInService);
+  });
+
+  afterEach(() => {
+    resetPeerContextProvider();
+    for (const chatTab of [...ChatTabList.instance.chatTabs]) chatTab.destroy();
+  });
+
+  it('starts the cut-in a line this end just said asks for', () => {
+    const cutIn = makeCutIn('炎の剣');
+    const spy = vi.spyOn(launcher, 'startCutIn').mockImplementation(() => {});
+
+    tab.addMessage({ from: 'me', name: '術者', text: '斬る 炎の剣', timestamp: Date.now() });
+
+    expect(spy).toHaveBeenCalledWith(cutIn, '');
+  });
+
+  it('leaves the backlog alone when somebody walks into the room', () => {
+    // Joining hands every line ever said to the same event a new line arrives on. Replaying
+    // them would set the whole room's cut-ins off again, one after another.
+    makeCutIn('炎の剣');
+    const spy = vi.spyOn(launcher, 'startCutIn').mockImplementation(() => {});
+
+    tab.addMessage({ from: 'me', name: '術者', text: '斬る 炎の剣', timestamp: Date.now() - 600_000 });
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('leaves the starting to the end that said the line', () => {
+    // Every end hears the line; if every end started it, one line would start it as many times
+    // as there are people in the room, and each start is spoken to everybody.
+    makeCutIn('炎の剣');
+    const spy = vi.spyOn(launcher, 'startCutIn').mockImplementation(() => {});
+
+    tab.addMessage({ from: 'somebody-else', name: '仲間', text: '斬る 炎の剣', timestamp: Date.now() });
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('says nothing of a secret line', () => {
+    makeCutIn('炎の剣');
+    const spy = vi.spyOn(launcher, 'startCutIn').mockImplementation(() => {});
+
+    tab.addMessage({ from: 'me', name: '術者', text: '斬る 炎の剣', tag: 'secret', timestamp: Date.now() });
+
+    expect(spy).not.toHaveBeenCalled();
   });
 });

@@ -8,6 +8,7 @@ import {
 } from '@axe/application/sync/object-change-network-helpers';
 import { EventChannel } from '@axe/core/event/event-channel';
 import { Network } from '@axe/core/network/network';
+import { clearIdentity, loadIdentity, saveIdentity } from '@axe/core/storage/identity-storage';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { NetworkEventHandlerService } from '@axe/features/lobby/network-event-handler.service';
@@ -49,6 +50,7 @@ describe('NetworkEventHandlerService', () => {
   });
 
   afterEach(() => {
+    clearIdentity();
     vi.restoreAllMocks();
     // The tests hand the static cursor a new one, which leaves whoever held the post
     // before it in the store for the next spec to count as a peer at the table.
@@ -72,10 +74,64 @@ describe('NetworkEventHandlerService', () => {
     expect(PeerCursor.myCursor.userId).toBe('u456');
   });
 
+  it('keeps the room this tab was last in while it waits outside any room', () => {
+    PeerCursor.myCursor = new PeerCursor();
+    saveIdentity({ userId: 'u', roomId: 'abc', roomName: 'room', role: 'gm', reConnectPass: '' });
+    vi.spyOn(Network, 'peerContext', 'get').mockReturnValue({
+      peerId: 'p',
+      userId: 'u',
+      roomId: '',
+      roomName: '',
+      isRoom: false,
+    } as never);
+
+    stubChange.networkOpen$.emit({ peerId: 'p' });
+
+    expect(loadIdentity()?.roomId).toBe('abc');
+    expect(loadIdentity()?.roomName).toBe('room');
+  });
+
+  it('writes down the room a connection opens into', () => {
+    PeerCursor.myCursor = new PeerCursor();
+    saveIdentity({ userId: 'u', roomId: 'abc', roomName: 'room', role: 'gm', reConnectPass: '' });
+    vi.spyOn(Network, 'peerContext', 'get').mockReturnValue({
+      peerId: 'p',
+      userId: 'u',
+      roomId: 'xyz',
+      roomName: 'other',
+      isRoom: true,
+    } as never);
+
+    stubChange.networkOpen$.emit({ peerId: 'p' });
+
+    expect(loadIdentity()?.roomId).toBe('xyz');
+    expect(loadIdentity()?.roomName).toBe('other');
+  });
+
   it('calibrates the clock as a peer connects', () => {
     stubChange.peerConnect$.emit({ peerId: 'p1' });
 
     expect(chatStub.calibrateTimeOffset).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not open a network connection in local mode', () => {
+    const configureSpy = vi.spyOn(Network, 'configure').mockImplementation(() => {});
+    const openStandbySpy = vi.spyOn(Network, 'openStandby').mockImplementation(() => {});
+
+    stubChange.loadConfig$.emit({ config: { backend: { url: '' }, localMode: true } });
+    stubChange.networkError$.emit({ errorType: 'server-error', errorMessage: 'offline' });
+
+    expect(configureSpy).toHaveBeenCalledOnce();
+    expect(openStandbySpy).not.toHaveBeenCalled();
+    expect(chatStub.sendSystemMessage).not.toHaveBeenCalled();
+  });
+
+  it('opens the standby connection outside local mode', () => {
+    const openStandbySpy = vi.spyOn(Network, 'openStandby').mockImplementation(() => {});
+
+    stubChange.loadConfig$.emit({ config: { backend: { url: 'https://example.test' }, localMode: false } });
+
+    expect(openStandbySpy).toHaveBeenCalledOnce();
   });
 
   it('passes over an unavailable peer without a word or a reconnection', () => {
@@ -160,6 +216,25 @@ describe('NetworkEventHandlerService', () => {
     }
   });
 
+  it('leaves the server backoff where it was when another error has been through', async () => {
+    vi.useFakeTimers();
+    try {
+      const openStandbySpy = vi.spyOn(Network, 'openStandby').mockImplementation(() => {});
+      // Two token errors before anything has opened, which is how a stale identity starts.
+      stubChange.networkError$.emit({ errorType: 'token-expired', errorMessage: '' });
+      stubChange.networkError$.emit({ errorType: 'token-expired', errorMessage: '' });
+      openStandbySpy.mockClear();
+
+      stubChange.networkError$.emit({ errorType: 'server-error', errorMessage: 'cold start' });
+
+      // The first wait of the server's own backoff, not the last of it.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(openStandbySpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports an expired token and reconnects', () => {
     const openStandbySpy = vi.spyOn(Network, 'openStandby').mockImplementation(() => {});
 
@@ -167,6 +242,18 @@ describe('NetworkEventHandlerService', () => {
 
     expect(chatStub.sendSystemMessage).toHaveBeenCalledTimes(2);
     expect(openStandbySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops after the limit on an error that keeps coming back', () => {
+    const openStandbySpy = vi.spyOn(Network, 'openStandby').mockImplementation(() => {});
+
+    // A token the cloud will not accept fails again the moment it is retried.
+    for (let i = 0; i < 10; i++) {
+      stubChange.networkError$.emit({ errorType: 'connectRtcApiFailed', errorMessage: '' });
+    }
+
+    expect(openStandbySpy).toHaveBeenCalledTimes(3);
+    expect(chatStub.sendSystemMessage).toHaveBeenCalledTimes(6);
   });
 
   it('says a peer is reconnecting', () => {

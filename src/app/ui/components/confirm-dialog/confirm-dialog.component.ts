@@ -1,15 +1,8 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { ConfirmDialogOption } from '@axe/application/ui/confirm-option';
 import { ModalService } from '@axe/application/ui/modal.service';
 import { TranslocoModule } from '@jsverse/transloco';
-
-export interface ConfirmDialogOption {
-  title?: string;
-  message: string;
-  okLabel?: string;
-  cancelLabel?: string;
-  danger?: boolean;
-}
 
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -38,10 +31,12 @@ export class ConfirmDialogComponent {
     });
   }
 
+  /** Confirms from the OK button, closing the dialog with true. */
   ok(): void {
     this.modalService.resolve(true);
   }
 
+  /** Declines from the cancel button, closing the dialog with false. */
   cancel(): void {
     this.modalService.resolve(false);
   }

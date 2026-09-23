@@ -1,15 +1,20 @@
 import { GridType } from '@axe/domain/tabletop/game-table';
+import { DEFAULT_FUNCTION_SPEC } from '@axe/features/map-editor/model/function-layer';
 import {
   CellLayer,
+  createLayer,
   createScene,
   FreehandLayer,
+  FunctionLayer,
   ImageLayer,
   MapScene,
   ShapeLayer,
   StampLayer,
   TextLayer,
 } from '@axe/features/map-editor/model/scene';
+import { setCell } from '@axe/features/map-editor/model/scene-ops';
 import { RenderHelpers, renderScene } from '@axe/features/map-editor/render/render-scene';
+import { fingerprint } from '@axe/testing/fingerprint';
 import { describe, expect, it } from 'vitest';
 
 interface Call {
@@ -139,6 +144,53 @@ describe('renderScene', () => {
     renderScene(ctx, sceneWith(layer), helpers, { drawGrid: false });
     const cellFills = ctx.calls.filter((c) => c.method === 'fillRect' && c.args[2] === 10 && c.args[3] === 10);
     expect(cellFills.length).toBe(2);
+  });
+
+  describe('the cells painted for what they do', () => {
+    function blocked(): FunctionLayer {
+      return {
+        id: 'f',
+        kind: 'function',
+        name: 'blocked',
+        visible: true,
+        locked: false,
+        opacity: 1,
+        role: 'moveBlock',
+        cells: { '0,0': true, '1,1': true },
+        spec: { ...DEFAULT_FUNCTION_SPEC },
+      };
+    }
+
+    function cellFillsIn(ctx: ReturnType<typeof createMockCtx>): number {
+      return ctx.calls.filter((c) => c.method === 'fillRect' && c.args[2] === 10 && c.args[3] === 10).length;
+    }
+
+    it('leaves them out of the picture unless it is asked for them', () => {
+      const ctx = createMockCtx();
+
+      renderScene(ctx, sceneWith(blocked()), helpers, { drawGrid: false });
+
+      expect(cellFillsIn(ctx)).toBe(0);
+    });
+
+    it('draws them where the editor asks to see its workings', () => {
+      const ctx = createMockCtx();
+
+      renderScene(ctx, sceneWith(blocked()), helpers, { drawGrid: false, drawFunctionLayers: true });
+
+      expect(cellFillsIn(ctx)).toBe(2);
+    });
+
+    it('leaves out a layer that has been hidden, asked for or not', () => {
+      const ctx = createMockCtx();
+
+      renderScene(ctx, sceneWith({ ...blocked(), visible: false }), helpers, {
+        drawGrid: false,
+        drawFunctionLayers: true,
+      });
+
+      expect(cellFillsIn(ctx)).toBe(0);
+    });
   });
 
   it('draws each shape kind without throwing', () => {
@@ -416,6 +468,53 @@ describe('renderScene', () => {
     renderScene(ctx, scene, helpers, { drawGrid: true });
     expect(ctx.counts('strokeRect')).toBe(0);
     expect(ctx.counts('stroke')).toBe(scene.cols * scene.rows);
+  });
+
+  it('draws a hex board with the same calls as before', () => {
+    const found: Record<string, string> = {};
+    for (const [name, type] of [
+      ['flat', GridType.HEX_VERTICAL],
+      ['pointy', GridType.HEX_HORIZONTAL],
+    ] as const) {
+      const cells = createLayer('cell', 'cells') as CellLayer;
+      setCell(cells, 0, 0, { type: 'solid', color: '#ff0000' });
+      setCell(cells, 1, 2, { type: 'solid', color: '#0000ff' });
+      const scene = createScene(3, 3, 12, type);
+      scene.layers = [cells];
+      const ctx = createMockCtx();
+      renderScene(ctx, scene, helpers, { drawGrid: true });
+      found[name] = fingerprint(JSON.stringify(ctx.calls));
+    }
+    expect(found).toMatchInlineSnapshot(`
+      {
+        "flat": "4555:bfdd9d92",
+        "pointy": "4500:c2149282",
+      }
+    `);
+  });
+
+  it('clips an image to the hex cells with the same calls as before', () => {
+    const layer: ImageLayer = {
+      id: 'i',
+      kind: 'image',
+      name: 'images',
+      visible: true,
+      locked: false,
+      opacity: 1,
+      items: [
+        { id: 'i1', imageIdentifier: 'a', x: 18, y: 18, w: 24, h: 24, rotation: 0, opacity: 1, clipToCells: true },
+      ],
+    };
+    const localHelpers: RenderHelpers = {
+      texturePattern: () => null,
+      stampImage: () => null,
+      rasterImage: () => ({}) as CanvasImageSource,
+    };
+    const scene = createScene(3, 3, 12, GridType.HEX_VERTICAL);
+    scene.layers = [layer];
+    const ctx = createMockCtx();
+    renderScene(ctx, scene, localHelpers, { drawGrid: false });
+    expect(fingerprint(JSON.stringify(ctx.calls))).toMatchInlineSnapshot(`"2946:515f90d6"`);
   });
 
   it('renders image-layer items via drawImage with rotation and honors opacity', () => {

@@ -1,6 +1,7 @@
+import { canvasToBlobPreferWebP } from '@axe/core/storage/canvas-blob';
 export interface DownscaleOptions {
   /**
-   * Crops to a square about the centre before resampling.
+   * Crops to a square before resampling.
    * For thumbnails and anything else that wants a uniform size.
    */
   square?: boolean;
@@ -12,12 +13,24 @@ export interface DownscaleOptions {
 }
 
 /**
+ * Where to take a square out of an image, against its shorter side.
+ *
+ * A portrait is taller than it is wide and carries the face at the top, so the square is taken
+ * from the top edge rather than the middle - the same part the chat window shows. Sideways, and
+ * with nothing to say which end matters, it is taken from the middle.
+ */
+export function squareCropOf(width: number, height: number): { sx: number; sy: number; side: number } {
+  const side = Math.min(width, height);
+  return { sx: Math.floor((width - side) / 2), sy: 0, side };
+}
+
+/**
  * Resamples an image down to a maximum side through a canvas and writes it back out.
  *
  * - Even within the maximum, a webp re-encode is tried and kept when it comes out smaller.
  * - Outside a browser, or with no canvas, the bytes come back unchanged.
  * - A result larger than the original, as a low-resolution source can give, is discarded.
- * - Asked for a square, it crops about the centre first and always outputs one.
+ * - Asked for a square, it crops one out first and always outputs one.
  */
 export async function downscaleImageBlob(
   blob: Blob | null | undefined,
@@ -50,13 +63,12 @@ export async function downscaleImageBlob(
     let targetH: number;
 
     if (square) {
-      // crop about the centre against the shorter side
-      const side = Math.min(naturalW, naturalH);
-      sx = Math.floor((naturalW - side) / 2);
-      sy = Math.floor((naturalH - side) / 2);
-      sw = side;
-      sh = side;
-      targetW = targetH = Math.min(side, maxDimension);
+      const crop = squareCropOf(naturalW, naturalH);
+      sx = crop.sx;
+      sy = crop.sy;
+      sw = crop.side;
+      sh = crop.side;
+      targetW = targetH = Math.min(crop.side, maxDimension);
     } else {
       const longSide = Math.max(naturalW, naturalH);
       if (longSide <= maxDimension) {
@@ -111,6 +123,13 @@ function loadImage(src: string, timeoutMs: number = LOAD_TIMEOUT_MS): Promise<HT
 
 const SKIP_WEBP_CONVERT = new Set(['image/gif', 'image/apng', 'image/webp', 'image/svg+xml']);
 
+/**
+ * Re-encodes an added image as WebP, or PNG where the browser cannot write WebP, when that comes
+ * out smaller, and otherwise hands the original back.
+ *
+ * GIF, APNG, animated PNG, WebP and SVG are left alone so animation and vectors survive, as is
+ * anything that is not an image or does not decode in time.
+ */
 export async function convertBlobToWebP(blob: Blob, loadTimeoutMs?: number): Promise<Blob> {
   if (!blob || blob.size === 0) return blob;
 
@@ -151,6 +170,11 @@ export async function convertBlobToWebP(blob: Blob, loadTimeoutMs?: number): Pro
   }
 }
 
+/**
+ * Whether PNG bytes carry an animation, told by an acTL chunk before the first image data.
+ *
+ * Only the chunks inside the bytes given are read, so the start of the file is enough.
+ */
 export function isAnimatedPng(buffer: ArrayBuffer): boolean {
   if (buffer.byteLength < 8) return false;
   const view = new DataView(buffer);
@@ -168,20 +192,4 @@ export function isAnimatedPng(buffer: ArrayBuffer): boolean {
     offset += 12 + chunkLength;
   }
   return false;
-}
-
-async function canvasToBlobPreferWebP(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
-  const webp = await canvasToBlob(canvas, 'image/webp', quality);
-  if (webp && webp.type === 'image/webp') return webp;
-  return canvasToBlob(canvas, 'image/png', quality);
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    if (typeof canvas.toBlob !== 'function') {
-      resolve(null);
-      return;
-    }
-    canvas.toBlob((blob) => resolve(blob), type, quality);
-  });
 }

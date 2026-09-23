@@ -1,13 +1,20 @@
 import { parseAppspotCharacter } from '@axe/domain/character/import/appspot-character-parser';
-import { APPSPOT_LABEL_MAPS } from '@axe/domain/character/import/appspot-label-maps.generated';
 import { ImportedCharacter } from '@axe/domain/character/import/imported-character';
 import { buildBbtAppspotCharacter } from '@axe/domain/character/import/system-profiles/bbt-appspot-profile';
 import { resolveAppspotDicebot } from '@axe/domain/character/import/system-profiles/dicebot-map';
 import { buildDx3AppspotCharacter } from '@axe/domain/character/import/system-profiles/dx3-appspot-profile';
+import { appspotLabelMap } from '@axe/domain/character/import/system-profiles/label-maps';
 import { buildPsychoFictionCharacter } from '@axe/domain/character/import/system-profiles/psychofiction-appspot';
 import { PF_APPSPOT_SYSTEMS } from '@axe/domain/character/import/system-profiles/psychofiction-systems';
 import { buildStellarAppspotCharacter } from '@axe/domain/character/import/system-profiles/stellar-appspot-profile';
 
+/**
+ * Reads a warehouse character with the profile for its system, falling back to the general parser.
+ *
+ * `systemHint` is the system slug the sheet was fetched under. A system with a dedicated profile is
+ * tried with it first; any other, or data that profile does not recognise, is read generally with
+ * that system's headings and given the system's dice bot where the data names none.
+ */
 export function parseAppspotCharacterForSystem(parsed: unknown, systemHint?: string): ImportedCharacter | null {
   const slug = (systemHint ?? '').trim().toLowerCase();
 
@@ -29,7 +36,7 @@ export function parseAppspotCharacterForSystem(parsed: unknown, systemHint?: str
     if (profile) return profile;
   }
 
-  const character = parseAppspotCharacter(parsed, APPSPOT_LABEL_MAPS[slug] ?? {});
+  const character = parseAppspotCharacter(parsed, appspotLabelMap(slug));
   if (character && character.dicebot.trim() === '') {
     character.dicebot = resolveAppspotDicebot(slug);
   }

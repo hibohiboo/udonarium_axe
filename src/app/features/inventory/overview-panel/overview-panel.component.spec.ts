@@ -1,5 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ImageStorage } from '@axe/core/storage/image-storage';
+import { Card } from '@axe/domain/card/card';
+import { CardStack } from '@axe/domain/card/card-stack';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import {
   DataElement,
@@ -9,9 +11,11 @@ import {
   DataElementType,
   DataElementViewMode,
 } from '@axe/domain/data/data-element';
+import { DiceSymbol } from '@axe/domain/dice/dice-symbol';
 import { TabletopObject } from '@axe/domain/tabletop/tabletop-object';
 import { OverviewPanelComponent } from '@axe/features/inventory/overview-panel/overview-panel.component';
 import { TEST_PROVIDERS } from '@axe/testing/test-providers';
+import { DraggableDirective } from '@axe/ui/directives/draggable.directive';
 
 describe('OverviewPanelComponent', () => {
   let component: OverviewPanelComponent;
@@ -31,6 +35,190 @@ describe('OverviewPanelComponent', () => {
 
   it('should create', () => {
     expect(component).toBeTruthy();
+  });
+
+  it('hides the face of a die kept back while its detail is open', async () => {
+    const die = DiceSymbol.create('D6', 0, 1);
+    component.tabletopObject = die;
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const read = () => (fixture.nativeElement as HTMLElement).textContent?.replace(/\s+/g, ' ') ?? '';
+    expect(read()).toContain(`D6: ${die.face}`);
+
+    die.owner = 'somebody-else';
+    await Promise.resolve();
+    await fixture.whenStable();
+
+    expect(read()).not.toContain(`D6: ${die.face}`);
+    die.destroy();
+  });
+
+  it('rotates the detail toward the hover area supplied by the tooltip', () => {
+    component.rotationDegrees = 90;
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector('[data-tooltip-rotation]') as HTMLElement;
+    expect(panel.dataset['tooltipRotation']).toBe('90');
+    expect(panel.style.transform).toBe('rotateZ(90deg)');
+  });
+
+  describe('a detail pinned to a screen edge', () => {
+    const bottomSeat = { edge: 'bottom', rotationDegrees: 0, alongEdgeRatio: 0.5 } as const;
+
+    function sizePanel(panel: HTMLElement, width: number, height: number): void {
+      Object.defineProperty(panel, 'offsetWidth', { value: width, configurable: true });
+      Object.defineProperty(panel, 'offsetHeight', { value: height, configurable: true });
+    }
+
+    async function renderPinned(): Promise<HTMLElement> {
+      component.tabletopObject = GameCharacter.create('edge-detail-test', 1, '');
+      component.edgeSeat = bottomSeat;
+      component.rotationDegrees = bottomSeat.rotationDegrees;
+      fixture.detectChanges();
+      await fixture.whenStable();
+      return fixture.nativeElement.querySelector('[data-tooltip-rotation]') as HTMLElement;
+    }
+
+    it('places itself against the edge instead of beside the pointer', async () => {
+      component.left = 640;
+      component.top = 480;
+      const panel = await renderPinned();
+
+      sizePanel(panel, 250, 180);
+      component.applyEdgePlacement();
+
+      expect(panel.style.left).toBe((window.innerWidth - 250) / 2 + 'px');
+      expect(panel.style.top).toBe(window.innerHeight - 48 - 180 + 'px');
+    });
+
+    it('places itself again once it has grown', async () => {
+      const panel = await renderPinned();
+      sizePanel(panel, 250, 180);
+      component.applyEdgePlacement();
+      const before = panel.style.top;
+
+      sizePanel(panel, 250, 320);
+      component.applyEdgePlacement();
+
+      expect(panel.style.top).not.toBe(before);
+      expect(panel.style.top).toBe(window.innerHeight - 48 - 320 + 'px');
+    });
+
+    it('takes no input, so the table underneath stays reachable', async () => {
+      await renderPinned();
+
+      expect(component.pointerEventsStyle).toEqual({ 'pointer-events-auto': false, 'pointer-events-none': true });
+      expect(fixture.nativeElement.querySelectorAll('.pointer-events-auto')).toHaveLength(0);
+    });
+
+    it('is out of reach of the keyboard as well as the pointer', async () => {
+      const panel = await renderPinned();
+
+      expect(panel.hasAttribute('inert')).toBe(true);
+    });
+
+    it('cannot be dragged out of its place', async () => {
+      const panel = await renderPinned();
+      const draggable = fixture.debugElement
+        .query((candidate) => candidate.nativeElement === panel)
+        .injector.get(DraggableDirective);
+
+      expect(draggable.isDisable()).toBe(true);
+    });
+
+    it('reports whether it lies over a point on the screen', async () => {
+      const panel = await renderPinned();
+      vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({
+        left: 100,
+        top: 200,
+        right: 350,
+        bottom: 380,
+        width: 250,
+        height: 180,
+      } as DOMRect);
+
+      expect(component.coversPoint(120, 210)).toBe(true);
+      expect(component.coversPoint(90, 210)).toBe(false);
+      expect(component.coversPoint(120, 400)).toBe(false);
+    });
+
+    it('covers nothing while it belongs beside the pointer', () => {
+      component.edgeSeat = null;
+      fixture.detectChanges();
+
+      expect(component.coversPoint(0, 0)).toBe(false);
+    });
+
+    it('goes out of sight without losing its size', async () => {
+      const panel = await renderPinned();
+      sizePanel(panel, 250, 180);
+
+      component.setPointerHidden(true);
+      expect(panel.style.visibility).toBe('hidden');
+      expect(panel.offsetHeight).toBe(180);
+
+      component.setPointerHidden(false);
+      expect(panel.style.visibility).toBe('');
+    });
+
+    it('leaves an ordinary detail beside the pointer alone', () => {
+      component.tabletopObject = GameCharacter.create('pointer-detail-test', 1, '');
+      component.edgeSeat = null;
+      fixture.detectChanges();
+
+      expect(component.pointerEventsStyle['pointer-events-auto']).toBe(true);
+      const panel = fixture.nativeElement.querySelector('[data-tooltip-rotation]') as HTMLElement;
+      expect(panel.hasAttribute('inert')).toBe(false);
+    });
+  });
+
+  it('draws card text over the image in a card pop-up', () => {
+    const image = ImageStorage.instance.add('card-popup-front.png');
+    const card = Card.create('文章カード', image.identifier, 'back.png');
+    card.faceText = 'ポップアップの文章';
+    component.tabletopObject = card;
+
+    try {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('card-face-preview')).toBeTruthy();
+    } finally {
+      card.destroy();
+      ImageStorage.instance.delete(image.identifier);
+    }
+  });
+
+  it('keeps the card text on the picture when it is opened out', () => {
+    const image = ImageStorage.instance.add('card-zoom-front.png');
+    const card = Card.create('文章カード', image.identifier, 'back.png');
+    card.faceText = '拡大しても読める文章';
+    component.tabletopObject = card;
+    component.chanageImageView(true);
+
+    try {
+      fixture.detectChanges();
+      const previews = fixture.nativeElement.querySelectorAll('card-face-preview') as NodeListOf<HTMLElement>;
+      expect(previews.length).toBe(2);
+      const opened = previews[previews.length - 1].querySelector('div') as HTMLElement;
+      expect(opened.style.width).toBe('100%');
+      expect(opened.style.height).toBe('100%');
+    } finally {
+      component.chanageImageView(false);
+      card.destroy();
+      ImageStorage.instance.delete(image.identifier);
+    }
+  });
+
+  it('uses the top card text for a deck pop-up', () => {
+    const stack = CardStack.create('文章山札');
+    const card = Card.create('一番上', 'front.png', 'back.png');
+    stack.putOnTop(card);
+    component.tabletopObject = stack;
+
+    try {
+      expect(component.overviewFaceCard).toBe(card);
+    } finally {
+      stack.destroy();
+    }
   });
 
   describe('filtering the empty elements out', () => {
@@ -478,6 +666,33 @@ describe('OverviewPanelComponent', () => {
     it('marks one on focus', () => {
       component.textFocus('elem-2');
       expect(component.isEditUrl('elem-2')).toBe(true);
+    });
+  });
+
+  describe('a calculating field in the popup', () => {
+    it('shows the result rather than the empty value it stores', () => {
+      const detail = DataElement.create('detail', '');
+      detail.appendChild(DataElement.create('筋力', '8'));
+      const calc = DataElement.create('攻撃力', '', {
+        fieldType: DataElementFieldType.CALC,
+        formula: '筋力 * 2',
+      });
+      detail.appendChild(calc);
+
+      expect(component.isCalcElement(calc)).toBe(true);
+      expect(component.calcText(calc)).toBe('16');
+    });
+
+    it('shows the result in a table cell as well', () => {
+      const detail = DataElement.create('detail', '');
+      detail.appendChild(DataElement.create('筋力', '8'));
+      const calc = DataElement.create('攻撃力', '', {
+        fieldType: DataElementFieldType.CALC,
+        formula: '筋力 + 2',
+      });
+      detail.appendChild(calc);
+
+      expect(component.getTableCellDisplayText(calc)).toBe('10');
     });
   });
 });

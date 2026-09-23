@@ -1,5 +1,5 @@
 import { afterNextRender, DestroyRef, Directive, ElementRef, inject, input, output } from '@angular/core';
-import { PointerCoordinate } from '@axe/core/input/pointer-device.service';
+import { PointerCoordinate } from '@axe/application/input/pointer-device.service';
 import { CSSNumber } from '@axe/core/transform/css-number';
 import { HandleType, ResizeHandler } from '@axe/ui/directives/resize-handler';
 
@@ -8,6 +8,57 @@ interface BoxSize {
   top: number;
   width: number;
   height: number;
+}
+
+/**
+ * Turns a pointer movement on screen into the same movement along the axes of an element that
+ * is turned by `rotationDegrees`, so dragging a turned panel's edge grows it the way it points.
+ */
+export function screenDeltaToElementDelta(x: number, y: number, rotationDegrees: number): PointerCoordinate {
+  const radians = (-rotationDegrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: x * cos - y * sin,
+    y: x * sin + y * cos,
+    z: 0,
+  };
+}
+
+/**
+ * The corner or edge that stays put while the other is dragged, in the element's own frame.
+ *
+ * Dragging the east edge holds the west one, and so on round: -1 is the near side of the axis
+ * and +1 the far one.
+ */
+export function anchorOf(handle: HandleType): { x: number; y: number } {
+  const west = handle === HandleType.W || handle === HandleType.NW || handle === HandleType.SW;
+  const north = handle === HandleType.N || handle === HandleType.NE || handle === HandleType.NW;
+  return { x: west ? 1 : -1, y: north ? 1 : -1 };
+}
+
+/**
+ * How far a resized element has to be moved back for the edge that was held to stay held.
+ *
+ * A panel is turned about its own middle, and `left`, `top`, `width` and `height` are all read
+ * before that turn is applied: widening it moves the middle sideways, and the picture is drawn
+ * about the middle's new place. Turned a quarter round, dragging one edge out would grow the
+ * panel from the middle and slide the whole of it sideways; turned half round it would grow
+ * away from the pointer altogether.
+ *
+ * The middle moves by half of what was added, along the element's own axes. Where the element
+ * is turned, that half has to be laid down turned as well, and the difference between the two
+ * is what is given back here. Nothing is given back where nothing is turned.
+ */
+export function rotationCorrection(width: number, height: number, anchor: { x: number; y: number }, degrees: number) {
+  const radians = (degrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const half = { x: (anchor.x * width) / 2, y: (anchor.y * height) / 2 };
+  return {
+    left: half.x - (half.x * cos - half.y * sin),
+    top: half.y - (half.x * sin + half.y * cos),
+  };
 }
 
 @Directive({ selector: '[appResizable]' })
@@ -20,6 +71,7 @@ export class ResizableDirective {
   readonly stackSelector = input('', { alias: 'resizable.stack' });
   readonly minWidth = input(100, { alias: 'resizable.minWidth' });
   readonly minHeight = input(100, { alias: 'resizable.minHeight' });
+  readonly rotation = input(0, { alias: 'resizable.rotation' });
 
   readonly ostart = output<MouseEvent | TouchEvent>({ alias: 'resizable.start' });
   readonly onmove = output<MouseEvent | TouchEvent>({ alias: 'resizable.move' });
@@ -64,10 +116,12 @@ export class ResizableDirective {
     });
   }
 
+  /** Lets go of any resize in progress on every edge and corner. */
   cancel() {
     this.handleMap.forEach((handle) => handle.input!.cancel());
   }
 
+  /** Stops listening on every edge and corner handle. The handle elements stay in place. */
   destroy() {
     this.handleMap.forEach((handle) => handle.input!.destroy());
   }
@@ -84,15 +138,21 @@ export class ResizableDirective {
     this.startPointer = handle.input!.pointer;
     this.prevTrans = { left: 0, top: 0, width: 0, height: 0 };
 
+    this.ostart.emit(e);
     e.stopPropagation();
   }
 
   private onResizeMove(e: MouseEvent | TouchEvent, handle: ResizeHandler) {
+    const localDelta = screenDeltaToElementDelta(
+      handle.input!.pointer.x - this.startPointer.x,
+      handle.input!.pointer.y - this.startPointer.y,
+      this.rotation()
+    );
     const trans: BoxSize = {
       left: 0,
       top: 0,
-      width: handle.input!.pointer.x - this.startPointer.x,
-      height: handle.input!.pointer.y - this.startPointer.y,
+      width: localDelta.x,
+      height: localDelta.y,
     };
 
     switch (handle.type) {
@@ -146,11 +206,15 @@ export class ResizableDirective {
       height: trans.height - this.prevTrans.height,
     };
 
-    const correction = this.calcCorrectionPosition(diff);
+    const correction = this.rotation() % 360 === 0 ? this.calcCorrectionPosition(diff) : zeroBoxSize();
     trans.left += correction.left;
     trans.top += correction.top;
     trans.width += correction.width;
     trans.height += correction.height;
+
+    const turned = rotationCorrection(trans.width, trans.height, anchorOf(handle.type), this.rotation());
+    trans.left += turned.left;
+    trans.top += turned.top;
 
     this.elementRef.nativeElement.style.left = trans.left + this.startPosition.left + 'px';
     this.elementRef.nativeElement.style.top = trans.top + this.startPosition.top + 'px';
@@ -158,12 +222,14 @@ export class ResizableDirective {
     this.elementRef.nativeElement.style.height = trans.height + this.startPosition.height + 'px';
 
     this.prevTrans = trans;
+    this.onmove.emit(e);
     if (e.cancelable) e.preventDefault();
     e.stopPropagation();
   }
 
   private onResizeEnd(e: MouseEvent | TouchEvent, handle: ResizeHandler) {
     if (handle.input!.isDragging && e.cancelable) e.preventDefault();
+    this.onend.emit(e);
     e.stopPropagation();
   }
 
@@ -228,4 +294,8 @@ export class ResizableDirective {
     });
     this.elementRef.nativeElement.style.zIndex = topZindex + 1 + '';
   }
+}
+
+function zeroBoxSize(): BoxSize {
+  return { left: 0, top: 0, width: 0, height: 0 };
 }

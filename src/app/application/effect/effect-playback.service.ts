@@ -1,6 +1,8 @@
 import { computed, DestroyRef, inject, Injectable, signal } from '@angular/core';
+import { MotionService } from '@axe/application/ui/motion.service';
 import { effectCast$ } from '@axe/core/event/domain-events';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { PERF_EFFECT_FRAME, perfCounters } from '@axe/core/util/perf-counters';
 import { EffectCast, normalizeEffectCast } from '@axe/domain/effect/effect-cast';
 import { DefeatReaction, defeatReactionOf } from '@axe/domain/effect/effect-defeat';
 import { EffectPreset } from '@axe/domain/effect/effect-preset';
@@ -23,6 +25,7 @@ const SHAKE_MS = 340;
 export class EffectPlaybackService {
   private readonly objectStore = inject(ObjectStore);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly motion = inject(MotionService);
 
   private readonly _activeCasts = signal<ActiveEffectCast[]>([]);
   readonly activeCasts = this._activeCasts.asReadonly();
@@ -56,6 +59,12 @@ export class EffectPlaybackService {
   private readonly _persistentSources = signal<ReadonlySet<string>>(new Set());
   private shakeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * Keeps the effect draw loop running on behalf of a named source, or lets that source go.
+   *
+   * Standing effects and table ambience each hold the loop under their own name, so one letting go
+   * does not stop it for the other.
+   */
   setPersistent(source: string, persistent: boolean): void {
     this._persistentSources.update((current) => {
       if (current.has(source) === persistent) return current;
@@ -81,6 +90,13 @@ export class EffectPlaybackService {
     });
   }
 
+  /**
+   * Plays a cast on this screen, from the broadcast or from a local preview.
+   *
+   * A cast that cannot be read, or names no preset in the room, plays nothing and answers null. Its
+   * sounds play even with motion turned off, but nothing is drawn and the answer is null. At most
+   * 12 casts run at once; the oldest is dropped.
+   */
   play(raw: unknown): ActiveEffectCast | null {
     const cast = normalizeEffectCast(raw);
     if (!cast) return null;
@@ -90,7 +106,7 @@ export class EffectPlaybackService {
 
     this.scheduleLaunchSound(preset);
     this.scheduleImpactSound(preset);
-    if (prefersReducedMotion()) return null;
+    if (!this.motion.enabled()) return null;
 
     this.startScreenShake(preset);
 
@@ -170,6 +186,7 @@ export class EffectPlaybackService {
   private tick(): void {
     this.frameHandle = null;
     const now = clock();
+    perfCounters.bump(PERF_EFFECT_FRAME);
     this.now.set(now);
 
     const remaining = this._activeCasts().filter(
@@ -188,10 +205,4 @@ export class EffectPlaybackService {
 
 function clock(): number {
   return typeof performance === 'object' ? performance.now() : Date.now();
-}
-
-/** The system's reduced-motion setting, used to decide on sound without the animation. */
-export function prefersReducedMotion(): boolean {
-  if (typeof matchMedia !== 'function') return false;
-  return matchMedia('(prefers-reduced-motion: reduce)').matches;
 }

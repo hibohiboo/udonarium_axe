@@ -68,13 +68,47 @@ chore(release): bump version to 1.2.2
 `--no-verify` / `LEFTHOOK=0` / `core.hooksPath` の変更 / lefthook 設定の一時無効化、
 **いずれも禁止**。フックが落ちたら原因を直してから再コミットする。
 
-| フック       | 内容                               |
-| ------------ | ---------------------------------- |
-| `commit-msg` | `commitlint`（メッセージ形式検査） |
-| `pre-commit` | `ng lint` + `ng test`（並列）      |
-| `pre-push`   | `npm run build`                    |
+| フック       | 内容                                                                  |
+| ------------ | --------------------------------------------------------------------- |
+| `commit-msg` | `commitlint`（メッセージ形式検査）                                    |
+| `pre-commit` | staged の `src/` に `eslint` + `vitest related`（関係する spec だけ） |
+| `pre-push`   | `npx vitest run`（全量） + `npm run build`                            |
+
+`pre-commit` の `vitest related` は staged ファイルから import を逆にたどって当たる spec だけを回す
+（[scripts/vitest-related.mjs](../scripts/vitest-related.mjs)。テンプレートは隣の `.ts` に読み替える）。
+ただし、テストのセットアップが読み込むファイル（間接的に読むものも含む）や、ランナーの設定
+（`vitest.config.ts` など）を staged にしたときは、どの spec にも効くので全量を回す。
+全量は `pre-push` と CI が見る。
 
 設定: [../lefthook.yml](../lefthook.yml)
+
+## CI（main への Pull Request）
+
+フックはコミットする人の手元でしか走らない。main への Pull Request では
+[GitHub Actions](../.github/workflows/ci.yml) が同じ関門を通したうえで、
+フックの外にあるものまで見る。
+
+| ジョブ           | 内容                                   |
+| ---------------- | -------------------------------------- |
+| `Format`         | `npm run format:check`                 |
+| `Lint`           | `npm run lint`                         |
+| `Test (ng test)` | `npm test`（Angular builder の設定）   |
+| `Test (vitest)`  | `npx vitest run`（`vitest.config.ts`） |
+| `Build`          | `npm run build`                        |
+| `Website`        | `website/` の VitePress ビルド         |
+
+ユニットテストの 2 経路は別ジョブに分けてある。片方だけ落ちることがあるので、
+チェック名で落ちた経路が分かるようにしている。
+
+E2E は載せていない。Playwright は CI だと 5 ブラウザぶん走る設定で、Pull Request
+1 回に何十分もかかる。手元で `npm run e2e` を回す。
+
+演出の見た目は `e2e/visual/` のスクリーンショット比較で守る。
+`npx playwright test --project=visual` が `e2e/visual/__screenshots__/` の基準画像と
+突き合わせる。時計を止め、アニメーションを終端まで送ってから撮るので、同じ機械なら同じ絵になる。
+基準画像は手元の Chromium で作ってコミットし、CI では回さない。
+見た目を変えるつもりの変更で差分が出たら `--update-snapshots` で撮り直し、何がどう変わったかを
+コミット本文に書く。差分の理由が言えないなら、それは退行として直す。
 
 ## リリース
 
@@ -112,8 +146,8 @@ chore(release): bump version to 1.2.2
 - **`conventional-changelog-conventionalcommits` は 9 系に留める** — 10 系にすると
   `@semantic-release/release-notes-generator` が節を 1 つも出さず、リリースノートが見出しだけになる
   （壊れるのはリリース時だけなので、上げる前に commit-analyzer / release-notes-generator を直接叩いて確かめる）
-- **`bcdice` を上げたら `node scripts/generate-bcdice-i18n.mjs` を実行する** — 新しいシステムの翻訳が
-  抜けたままだと、全システムを静的読み込みした時点で `table.$[] is not a function` で落ちる
+- **`bcdice` を上げたら `node scripts/generate-bcdice-importers.mjs` を実行する** — ゲームシステムと翻訳は
+  この一覧から 1 つずつ読み込む。新しいシステムが一覧に無いと、そのシステムを選んでも DiceBot で振られる
 
 ## 依存の脆弱性（`npm audit`）
 

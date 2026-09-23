@@ -19,49 +19,83 @@ import { EffectCastService } from '@axe/application/effect/effect-cast.service';
 import { EffectLibraryService } from '@axe/application/effect/effect-library.service';
 import { EffectPlaybackService } from '@axe/application/effect/effect-playback.service';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerCoordinate, PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { GameObjectInventoryService } from '@axe/application/inventory/game-object-inventory.service';
 import { DisclosureService } from '@axe/application/permission/disclosure.service';
 import { RolePermissionService } from '@axe/application/permission/role-permission.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { MovePlanService } from '@axe/application/tabletop/move-plan.service';
+import { MoveRangeService } from '@axe/application/tabletop/move-range.service';
 import { RangeShapeInvokeService } from '@axe/application/tabletop/range-shape-invoke.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
+import { TriggerFireService } from '@axe/application/tabletop/trigger-fire.service';
 import { VisionService } from '@axe/application/tabletop/vision.service';
-import { ContextMenuSeparator, ContextMenuService } from '@axe/application/ui/context-menu.service';
+import { BillboardFacing, facesAlways, NOT_TURNED } from '@axe/application/ui/billboard-frame.service';
+import { BuffViewPreferenceService } from '@axe/application/ui/buff-view-preference.service';
+import { ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { buildOverlapContextMenu } from '@axe/application/ui/overlap-context-menu';
 import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
 import { PieceContextMenuService } from '@axe/application/ui/piece-context-menu.service';
+import { PieceOverlayPreferenceService } from '@axe/application/ui/piece-overlay-preference.service';
 import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
 import { sheetPanelBox } from '@axe/application/ui/sheet-panel';
 import { sheetPanelTitle } from '@axe/application/ui/sheet-panel';
 import { buildSurfaceSwitchContextMenu } from '@axe/application/ui/surface-switch-context-menu';
 import { TabletopOverlapService } from '@axe/application/ui/tabletop-overlap.service';
+import { transientSignal } from '@axe/application/ui/transient-signal';
 import { UiSignalService } from '@axe/application/ui/ui-signal.service';
 import { callResourceChange, resourceChange$ } from '@axe/core/event/domain-events';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { getPeerContext } from '@axe/core/network/peer-context-source';
 import { imageFileEqual } from '@axe/core/storage/image-file';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { BuffBadge, toBuffBadges } from '@axe/domain/character/buff-badge';
+import { BUFF_VIEW_LABEL_KEYS, type BuffViewMode, nextBuffViewMode } from '@axe/domain/character/buff-view-mode';
 import { GameCharacter } from '@axe/domain/character/game-character';
-import { isGaugeInverted, PieceGauge, selectPieceGauges } from '@axe/domain/character/piece-gauge';
+import { gaugeNumbersOf, isGaugeInverted, PieceGauge, selectPieceGauges } from '@axe/domain/character/piece-gauge';
+import { isResourceElement } from '@axe/domain/character/resource-catalog';
 import {
   diffResourceSnapshots,
-  loudestChangeRatio,
+  loudestChange,
   ResourceChange,
+  ResourceChangeKind,
+  ResourceChangeSeverity,
   resourceChangeSeverity,
   ResourceSnapshot,
 } from '@axe/domain/character/resource-change';
+import {
+  playsEffectOnChange,
+  playsSoundOnChange,
+  ResourceSoundSet,
+  soundSetOnChange,
+} from '@axe/domain/character/resource-feedback';
 import { DataElement } from '@axe/domain/data/data-element';
 import { collectDataElements } from '@axe/domain/data/data-element-tree';
 import { PresetSound, SoundEffect } from '@axe/domain/media/sound-effect';
+import { Config } from '@axe/domain/peer/config';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { GridSnapStyle } from '@axe/domain/tabletop/game-table';
+import { buildHexRingClipPath, calcHexFlowerParams, HexFlowerParams } from '@axe/domain/tabletop/hex-flower-geometry';
 import { isFlatTopGrid, isHexGrid } from '@axe/domain/tabletop/hex-geometry';
-import { buildGameCharacterContextMenu } from '@axe/features/character/game-character/game-character-context-menu';
+import { landingLeanAt } from '@axe/domain/tabletop/move/landing-height';
+import {
+  DEFAULT_MULTI_ANGLE_PIECE_REVOLUTION_SECONDS,
+  multiAngleNameMotionMode,
+  multiAngleOrbitAnimation,
+  multiAnglePieceMotionMode,
+  multiAngleRotationPhase,
+} from '@axe/domain/tabletop/multi-angle';
+import { multiAngleFontScaleFactor } from '@axe/domain/tabletop/multi-angle-font-scale';
+import { resolveRoomRules } from '@axe/domain/tabletop/room-rules';
+import { asTableFacingMark, TableFacingMark } from '@axe/domain/tabletop/table-facing-mark';
+import { isOffTheFloor } from '@axe/domain/tabletop/tabletop-object';
+import { Terrain } from '@axe/domain/tabletop/terrain';
+import { terrainBoxOf } from '@axe/domain/tabletop/terrain-box';
+import { buildGameCharacterContextMenuModel } from '@axe/features/character/game-character/game-character-context-menu';
 import { GameCharacterBuffViewComponent } from '@axe/features/character/game-character-buff-view/game-character-buff-view.component';
-import { GameCharacterSheetComponent } from '@axe/features/character/game-character-sheet/game-character-sheet.component';
 import { GameDataElementBuffComponent } from '@axe/features/character/game-data-element-buff/game-data-element-buff.component';
+import { ObjectPanelService } from '@axe/features/panels/object-panel.service';
 import { LightSettingsComponent } from '@axe/features/tabletop/light-settings/light-settings.component';
+import { BillboardDirective } from '@axe/ui/directives/billboard.directive';
 import { MovableOption } from '@axe/ui/directives/movable.directive';
 import { MovableDirective } from '@axe/ui/directives/movable.directive';
 import { RotableOption } from '@axe/ui/directives/rotable.directive';
@@ -73,9 +107,14 @@ import {
   makeLabelOrbitTransform,
   makeScreenLiftTransform,
 } from '@axe/ui/tabletop/billboard-transform';
-import { buildHexRingClipPath, calcHexFlowerParams, HexFlowerParams } from '@axe/ui/tabletop/hex-pedestal-geometry';
+import { makeMultiAngleCurvedName } from '@axe/ui/tabletop/multi-angle-curved-name';
+import {
+  makeMultiAngleBuffOrbit,
+  makeMultiAngleResourceGauge,
+  MAX_MULTI_ANGLE_RESOURCE_GAUGES,
+} from '@axe/ui/tabletop/multi-angle-orbit-decoration';
+import { pieceImageView } from '@axe/ui/tabletop/piece-image-view';
 import { setupInputHandler, setupMovableRotableForPiece } from '@axe/ui/tabletop/setup-tabletop-piece';
-import { supersampleFactor, supersampleInsetPercent, supersampleTransform } from '@axe/ui/tabletop/supersample';
 import { translateZCss, Z_OFFSET_TALL_OBJECT_PX } from '@axe/ui/tabletop/z-offset';
 import { TranslocoModule } from '@jsverse/transloco';
 
@@ -83,16 +122,26 @@ const DECOR_SUPERSAMPLE = 3;
 const DECOR_BASE_FONT_PX = 10;
 const NAME_BASE_FONT_PX = 15;
 const GAUGE_ROW_HEIGHT_PX = 13;
-type BuffViewMode = 'icon' | 'detail' | 'count';
+const MULTI_ANGLE_RESOURCE_BUFF_DURATION_FACTOR = 1.25;
 
-function resourceChangeSound(kind: 'damage' | 'heal', ratio: number): string {
-  const severity = resourceChangeSeverity(ratio);
-  if (kind === 'damage') {
-    if (severity === 'small') return PresetSound.damageSmall;
-    return severity === 'large' ? PresetSound.damageLarge : PresetSound.damageMedium;
-  }
-  if (severity === 'small') return PresetSound.healSmall;
-  return severity === 'large' ? PresetSound.healLarge : PresetSound.healMedium;
+type PresetSoundKey = Exclude<keyof typeof PresetSound, 'prototype'>;
+
+const RESOURCE_CHANGE_SOUND_KEYS: Record<
+  ResourceSoundSet,
+  Record<ResourceChangeKind, Record<ResourceChangeSeverity, PresetSoundKey>>
+> = {
+  flesh: {
+    damage: { small: 'damageSmall', medium: 'damageMedium', large: 'damageLarge' },
+    heal: { small: 'healSmall', medium: 'healMedium', large: 'healLarge' },
+  },
+  mech: {
+    damage: { small: 'mechDamageSmall', medium: 'mechDamageMedium', large: 'mechDamageLarge' },
+    heal: { small: 'mechHealSmall', medium: 'mechHealMedium', large: 'mechHealLarge' },
+  },
+};
+
+function resourceChangeSound(kind: ResourceChangeKind, ratio: number, soundSet: ResourceSoundSet): string {
+  return PresetSound[RESOURCE_CHANGE_SOUND_KEYS[soundSet][kind][resourceChangeSeverity(ratio)]];
 }
 
 const FLOATING_CHANGE_MS = 1300;
@@ -104,18 +153,27 @@ const BUFF_STACK_GAP_PX = 40;
 const TARGET_STACK_GAP_PX = 52;
 const BUFF_DETAIL_ROW_HEIGHT_PX = 12;
 const BUFF_BADGE_ROW_HEIGHT_PX = 22;
-const BUFF_BADGES_PER_ROW = 6;
+const BUFF_BADGES_PER_ROW = 5;
 const ROLL_HANDLE_MIN_PX = 20;
 const ROLL_HANDLE_MAX_PX = 56;
 const ROLL_HANDLE_SIZE_RATIO = 0.56;
 const ROLL_HANDLE_GAP_RATIO = 0.25;
 const ROLL_HANDLE_ICON_RATIO = 24 / 28;
+const RIGHT_DRAG_THRESHOLD_PX = 3;
+
+interface PieceRightDrag {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dragged: boolean;
+}
 
 @Component({
   selector: 'game-character',
   templateUrl: './game-character.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
+    BillboardDirective,
     MovableDirective,
     RotableDirective,
     SelectableDirective,
@@ -139,17 +197,23 @@ export class GameCharacterComponent {
   private readonly characterDice = inject(CharacterDiceService);
   private readonly elementRef = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly panelService = inject(PanelService);
+  private readonly objectPanels = inject(ObjectPanelService);
   private readonly pointerDeviceService = inject(PointerDeviceService);
   private readonly objectStore = inject(ObjectStore);
   private readonly selectionSignalService = inject(SelectionSignalService);
   private readonly inventoryService = inject(GameObjectInventoryService);
   private readonly uiSignalService = inject(UiSignalService);
+  private readonly buffViewPreference = inject(BuffViewPreferenceService);
+  private readonly overlay = inject(PieceOverlayPreferenceService);
   private readonly objectChange = inject(ObjectChangeService);
   private readonly tabletopService = inject(TabletopService);
   private readonly tabletopOverlap = inject(TabletopOverlapService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly translateFn = inject(TRANSLATE_FN);
   private readonly rangeShapeInvoke = inject(RangeShapeInvokeService);
+  private readonly moveRangeService = inject(MoveRangeService);
+  private readonly triggerFire = inject(TriggerFireService);
+  private readonly movePlan = inject(MovePlanService);
   private readonly effectLibrary = inject(EffectLibraryService);
   private readonly effectCast = inject(EffectCastService);
   private readonly effectAutoPlay = inject(EffectAutoPlayService);
@@ -167,8 +231,7 @@ export class GameCharacterComponent {
     const char = this.gameCharacter();
     if (!char) return false;
     this.objectChange.versionOf(char.identifier)();
-    const surface = char.location.surface ?? 'floor';
-    return surface !== 'floor';
+    return isOffTheFloor(char);
   });
 
   constructor() {
@@ -233,6 +296,8 @@ export class GameCharacterComponent {
     this.destroyRef.onDestroy(() => {
       clearTimeout(this.highlightTimer);
       clearTimeout(this.unhighlightTimer);
+      this.clearNativeContextMenuSuppression();
+      this.removeRightDragCenterMarker();
       for (const timer of this.floatingTimers) clearTimeout(timer);
       this.floatingTimers.clear();
     });
@@ -250,6 +315,7 @@ export class GameCharacterComponent {
 
   readonly gameCharacter = input<GameCharacter | null>(null);
   readonly rootElementRef = viewChild<ElementRef<HTMLElement>>('root');
+  private readonly movableRef = viewChild(MovableDirective);
 
   readonly isHiddenByVision = computed(() => {
     const char = this.gameCharacter();
@@ -258,6 +324,10 @@ export class GameCharacterComponent {
     return !this.visionService.isTokenVisible(char);
   });
 
+  /**
+   * Whether the piece is locked in place, read and written on the character; false while no
+   * character is bound.
+   */
   get isLock(): boolean {
     const char = this.gameCharacter();
     return char?.isLock ?? false;
@@ -277,12 +347,14 @@ export class GameCharacterComponent {
     const char = this.gameCharacter();
     if (!char) return false;
     this.objectChange.versionOf(char.identifier)();
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     return char.hideName && !this.rolePermission.canSeeHidden;
   });
+  /** Buffs go unshown for a piece set to hide them, and for every piece while this seat has them switched off. */
   readonly hideBuff = computed(() => {
     const char = this.gameCharacter();
     if (!char) return false;
+    if (!this.overlay.buffs()) return true;
     this.objectChange.versionOf(char.identifier)();
     return char.hideBuff;
   });
@@ -296,6 +368,35 @@ export class GameCharacterComponent {
     this.objectChange.versionOf(char?.identifier ?? '')();
     return char?.altitude ?? 0;
   });
+
+  /**
+   * How the ground under the piece leans, which its pedestal and the picture lying on it take.
+   *
+   * The piece itself stands upright on it, as a figure does on a hillside; only what is lying
+   * on the ground follows the ground. Nothing leans on a table looked at from straight above,
+   * where a lean would only squash what it turned. The blocks it could be standing on are the
+   * ones it is over, so a change to one of those leans it again.
+   */
+  readonly groundLean = computed(() => {
+    const char = this.gameCharacter();
+    if (!char || this.tabletopService.mode2d()) return '';
+    this.objectChange.versionOf(char.identifier)();
+    this.objectChange.collectionOf(Terrain.aliasName)();
+    const table = this.tabletopService.currentTable;
+    const grid = table.gridSize;
+    const middle = (char.size * grid) / 2;
+    const x = char.location.x + middle;
+    const y = char.location.y + middle;
+    const standingOn = table.terrains.filter((terrain) => {
+      const box = terrainBoxOf(terrain, grid);
+      return box.minX <= x && x <= box.maxX && box.minY <= y && y <= box.maxY;
+    });
+    for (const terrain of standingOn) this.objectChange.versionOf(terrain.identifier)();
+    const lean = landingLeanAt(standingOn, grid, x, y, table.gridType);
+    if (!lean) return '';
+    return `rotateY(${-Math.atan(lean.eastward).toFixed(4)}rad) rotateX(${Math.atan(lean.southward).toFixed(4)}rad)`;
+  });
+  /** Sets the piece's height above the table in grid cells; does nothing while no character is bound. */
   setAltitude(altitude: number) {
     const char = this.gameCharacter();
     if (char) char.altitude = altitude;
@@ -310,6 +411,10 @@ export class GameCharacterComponent {
     },
     { equal: imageFileEqual() }
   );
+  /**
+   * The piece's turn on the table in degrees, read and written on the character; 0 while no
+   * character is bound.
+   */
   get rotate(): number {
     const char = this.gameCharacter();
     return char?.rotate ?? 0;
@@ -318,6 +423,10 @@ export class GameCharacterComponent {
     const char = this.gameCharacter();
     if (char) char.rotate = rotate;
   }
+  /**
+   * The piece's tilt in degrees, read and written on the character and set by the roll handles; 0
+   * while no character is bound.
+   */
   get roll(): number {
     const char = this.gameCharacter();
     return char?.roll ?? 0;
@@ -344,6 +453,7 @@ export class GameCharacterComponent {
     this.objectChange.versionOf(char.identifier)();
     return char.specifyKomaImageFlag;
   });
+  /** Whether the piece casts a drop shadow under its picture. */
   get isDropShadow(): boolean {
     const char = this.gameCharacter();
     return char?.isDropShadow ?? false;
@@ -352,6 +462,7 @@ export class GameCharacterComponent {
     const char = this.gameCharacter();
     if (char) char.isDropShadow = isDropShadow;
   }
+  /** Whether the piece shows its elevation label while it is raised or lowered by half a cell or more. */
   get isAltitudeIndicate(): boolean {
     const char = this.gameCharacter();
     return char?.isAltitudeIndicate ?? false;
@@ -368,16 +479,26 @@ export class GameCharacterComponent {
     this.entryBounce.set(false);
   }
 
-  protected readonly buffViewMode = signal<BuffViewMode>('icon');
+  protected readonly buffViewMode = linkedSignal<BuffViewMode>(() => this.buffViewPreference.mode());
   protected readonly foldingBuff = computed(() => this.buffViewMode() !== 'detail');
+  protected readonly buffViewLabelKey = computed(() => BUFF_VIEW_LABEL_KEYS[this.buffViewMode()]);
 
+  protected cycleBuffView(event: MouseEvent): void {
+    const fromPress = event.type === 'mousedown';
+    if (fromPress && event.button !== 0) return;
+    if (!fromPress && event.detail !== 0) return;
+    event.stopPropagation();
+    this.buffViewMode.update(nextBuffViewMode);
+  }
+
+  /** The size of one grid cell on the current table, in pixels. */
   get gridSize(): number {
     return this.tabletopService.gridSize();
   }
   math = Math;
 
   viewRotateX = 50;
-  readonly viewRotateZ = computed(() => this.uiSignalService.tableViewRotation()?.z ?? 10);
+  readonly viewRotateZ = this.uiSignalService.tableViewRotationZ;
 
   readonly rotateSignal = computed(() => {
     const char = this.gameCharacter();
@@ -386,72 +507,64 @@ export class GameCharacterComponent {
     return char.rotate;
   });
 
-  readonly billboardTransform = computed(() => (this.isPoster() ? '' : this.makeBillboardTransform(30)));
+  readonly nameFacing = computed<BillboardFacing>(() => (this.isPoster() ? NOT_TURNED : this.billboardFacing(30)));
 
-  readonly billboardTransformBuff = computed(() =>
-    this.isPoster() ? '' : this.makeBillboardTransform(BUFF_STACK_GAP_PX + this.gaugePanelHeightEstimate())
+  readonly buffFacing = computed<BillboardFacing>(() =>
+    this.isPoster() ? NOT_TURNED : this.billboardFacing(BUFF_STACK_GAP_PX + this.gaugePanelHeightEstimate())
   );
 
-  readonly billboardTransformImage = computed(() => (this.isPoster() ? '' : this.makeBillboardTransform(0)));
+  readonly imageFacing = computed<BillboardFacing>(() =>
+    this.isPoster() ? NOT_TURNED : this.billboardFacing(0, this.imageTurnsWithPiece())
+  );
 
   readonly imageBillboardEnabled = computed(() => {
     if (this.isPoster()) return true;
+    return this.tabletopService.imageBillboard() || this.tabletopService.mode2d();
+  });
+
+  readonly multiAnglePiecePedestalRotation = computed(() => {
+    const orbit = this.multiAngleNameOrbitEnabled() ? 'rotateZ(var(--multi-angle-piece-angle, 0deg))' : '';
+    const lean = this.groundLean();
+    return lean.length > 0 ? `${lean} ${orbit}`.trimEnd() : orbit;
+  });
+
+  readonly multiAnglePieceImageRotation = computed(() =>
+    this.multiAngleNameOrbitEnabled() ? 'rotateZ(var(--multi-angle-piece-angle, 0deg))' : ''
+  );
+
+  private readonly pieceImageFacing = computed<BillboardFacing>(() => {
+    const billboard = this.imageFacing();
+    const spin = this.multiAnglePieceImageRotation();
+    return (rotation) => [billboard(rotation), spin].filter((part) => part.length > 0).join(' ');
+  });
+
+  /**
+   * Whether a piece is kept inside its cell, which the room answers for everyone.
+   *
+   * Only while the table is looked at from above: standing along the table, a piece is meant
+   * to rise out of its cell, and holding it down would leave nothing but a tile.
+   */
+  readonly fitsImageInCell = computed(() => {
+    if (!this.tabletopService.mode2d()) return false;
     const table = this.tabletopService.currentTable;
     this.objectChange.versionOf(table.identifier)();
-    this.objectChange.versionOf(this.tabletopService.tableSelecter.identifier)();
-    return table.imageBillboard || table.mode2d;
+    this.objectChange.versionOf('Config')();
+    const config = this.objectStore.get<Config>('Config') ?? null;
+    return resolveRoomRules(config?.roomRuleAnswers ?? null, table).pieceImageInCell;
   });
 
-  private readonly imageNaturalSize = linkedSignal<string, { width: number; height: number } | null>({
-    source: () => this.imageFile().url,
-    computation: () => null,
+  readonly imageView = pieceImageView({
+    imageUrl: computed(() => this.imageFile().url),
+    isPoster: this.isPoster,
+    sizePx: computed(() => this.size() * this.gridSize),
+    specifiedHeightPx: computed(() =>
+      this.specifyKomaImageFlag() && !this.fitsImageInCell() ? this.komaImageHeightSignal() : null
+    ),
+    billboardEnabled: this.imageBillboardEnabled,
+    billboardFacing: this.pieceImageFacing,
+    squarePoster: true,
+    fitInCell: this.fitsImageInCell,
   });
-
-  onImageLoad(event: Event): void {
-    const img = event.target as HTMLImageElement;
-    if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
-    this.imageNaturalSize.set({ width: img.naturalWidth, height: img.naturalHeight });
-  }
-
-  readonly imageSupersample = computed(() => {
-    const natural = this.imageNaturalSize();
-    if (!natural) return 1;
-    if (this.isPoster()) return supersampleFactor(Math.min(natural.width, natural.height), this.size() * this.gridSize);
-    if (this.specifyKomaImageFlag()) return supersampleFactor(natural.height, this.komaImageHeightSignal());
-    return supersampleFactor(natural.width, this.size() * this.gridSize);
-  });
-
-  readonly imageSupersamplePercent = computed(() => this.imageSupersample() * 100 + '%');
-
-  readonly imageSupersampleInset = computed(() => supersampleInsetPercent(this.imageSupersample()) + '%');
-
-  readonly imageBoxHeightPx = computed(() => {
-    const natural = this.imageNaturalSize();
-    if (!natural || this.imageSupersample() <= 1 || this.isPoster()) return null;
-    if (this.specifyKomaImageFlag()) return this.komaImageHeightSignal();
-    return (this.size() * this.gridSize * natural.height) / natural.width;
-  });
-
-  readonly posterImageTransform = computed(() =>
-    supersampleTransform({ factor: this.imageSupersample(), anchor: 'center' })
-  );
-
-  readonly komaImageTransform = computed(() =>
-    supersampleTransform({
-      factor: this.imageSupersample(),
-      anchor: 'bottom',
-      outer: `translateX(-50%) translateX(${(this.size() * this.gridSize) / 2}px)`,
-      inner: this.imageBillboardEnabled() ? this.billboardTransformImage() : '',
-    })
-  );
-
-  readonly pieceImageTransform = computed(() =>
-    supersampleTransform({
-      factor: this.imageSupersample(),
-      anchor: 'bottom',
-      inner: this.imageBillboardEnabled() ? this.billboardTransformImage() : '',
-    })
-  );
 
   private readonly pieceCenterShift = computed(
     () => `translateX(-50%) translateX(${(this.size() * this.gridSize) / 2}px)`
@@ -466,9 +579,7 @@ export class GameCharacterComponent {
 
   private readonly rollHandleGapPx = computed(() => Math.round(this.rollHandleSizePx() * ROLL_HANDLE_GAP_RATIO));
 
-  readonly rollHandleHeadTransform = computed(
-    () => `${this.pieceCenterShift()} translateY(-100%) translateY(${-this.rollHandleGapPx()}px)`
-  );
+  readonly rollHandleHeadTransform = computed(() => this.pieceCenterShift());
 
   readonly rollHandleFootTransform = computed(
     () => `${this.pieceCenterShift()} translateY(100%) translateY(${this.rollHandleGapPx()}px)`
@@ -476,60 +587,159 @@ export class GameCharacterComponent {
 
   readonly mode2dEnabled = computed(() => {
     if (this.isPoster()) return true;
+    return this.tabletopService.mode2d();
+  });
+
+  /** What the room asks of a piece that has to show which way it faces. */
+  readonly facingMark = computed<TableFacingMark>(() => {
     const table = this.tabletopService.currentTable;
     this.objectChange.versionOf(table.identifier)();
     this.objectChange.versionOf(this.tabletopService.tableSelecter.identifier)();
-    return table.mode2d;
+    this.objectChange.versionOf('Config')();
+    const config = this.objectStore.get<Config>('Config') ?? null;
+    const mark = asTableFacingMark(resolveRoomRules(config?.roomRuleAnswers ?? null, table).facingMark);
+    // A piece that turns to face every side of a flat screen has no one facing to mark.
+    const multiAngle = this.tabletopService.mode2d() && this.tabletopService.display().multiAngleEnabled;
+    return mark === 'turn' && multiAngle ? 'none' : mark;
   });
 
-  private labelOrbitTransform(distance3d: number, distance2d: number): string {
-    return makeLabelOrbitTransform({
-      rotation: this.uiSignalService.tableViewRotation(),
-      distance3d,
-      distance2d,
-      mode2d: this.mode2dEnabled(),
-    });
+  /**
+   * Whether the piece may be turned at all.
+   *
+   * Seen from above, turning a piece shows nothing, so it is held still. A table that shows
+   * facing has something to show, and hands the handles back.
+   */
+  readonly canTurn = computed(() => {
+    if (this.isPoster()) return false;
+    return !this.mode2dEnabled() || this.facingMark() !== 'none';
+  });
+
+  /** The picture itself turns with the piece, rather than staying square to the reader. */
+  readonly imageTurnsWithPiece = computed(() => this.mode2dEnabled() && this.facingMark() === 'turn');
+
+  readonly showFacingArrow = computed(() => !this.isPoster() && this.facingMark() === 'arrow');
+
+  /**
+   * The mark sits just outside the piece, pointing the way the picture's own head points.
+   *
+   * It is drawn as boldly as the target marker: a piece's facing is read at a glance across
+   * the whole table, and a faint mark on a painted floor is read at none.
+   */
+  readonly facingArrowSizePx = computed(() => Math.max(16, Math.round(this.gridSize * 0.44)));
+
+  readonly facingArrowOffsetPx = computed(() => {
+    const baseOffset = Math.round(this.gridSize * 0.06);
+    if (!this.multiAngleResourceBuffOrbitEnabled()) return baseOffset;
+    const gauge = this.multiAngleResourceGaugeLayout();
+    return gauge.segments.length > 0 ? baseOffset + gauge.strokeWidth : baseOffset;
+  });
+
+  private labelOrbitFacing(distance3d: number, distance2d: number): BillboardFacing {
+    const mode2d = this.mode2dEnabled();
+    return (rotation) => makeLabelOrbitTransform({ rotation, distance3d, distance2d, mode2d });
   }
 
-  readonly pieceGauges = computed<PieceGauge[]>(() => {
+  /**
+   * Where a label hangs from, counted from the middle of the piece's ground.
+   *
+   * The part that moves the label out from the piece is bound to the element itself rather than
+   * added in the template, so the whole of its transform is written by the frame.
+   */
+  private labelStandFacing(orbit: BillboardFacing): BillboardFacing {
+    const stand = `translateX(-50%) translateX(${(this.size() * this.gridSize) / 2}px) `;
+    return (rotation) => stand + orbit(rotation);
+  }
+
+  /** What a stack of labels above a piece is turned by, the billboard and the scale it is drawn at. */
+  private labelStackFacing(billboard: BillboardFacing): BillboardFacing {
+    const drawnAt = ` ${this.decorScale} translateX(-50%)`;
+    return (rotation) => billboard(rotation) + drawnAt;
+  }
+
+  /** The resource bars drawn over the piece, none while this seat has them switched off. */
+  readonly pieceGauges = computed<PieceGauge[]>(
+    () => {
+      if (!this.overlay.resourceBars()) return [];
+      const detail = this.gameCharacter()?.detailDataElement ?? null;
+      if (this.followedTree(detail) === null || !detail) return [];
+      return selectPieceGauges(detail);
+    },
+    { equal: sameEntries }
+  );
+
+  /**
+   * Follows one part of the piece's data so that a computation hears it change, and hands back
+   * everything under it.
+   *
+   * A part the piece does not have yet is followed through every data element, since it may be
+   * added anywhere under the piece. A part it has is followed through itself, what is under it
+   * and the data elements it hangs from, which are what change when it is taken away or another
+   * is put in its place, rather than through every data element of every piece on the table.
+   * The piece itself is not followed: moving it changes it many times a second, and none of that
+   * reaches its data.
+   */
+  private followedTree(element: DataElement | null): DataElement[] | null {
+    if (!element) {
+      this.objectChange.collectionOf('data')();
+      return null;
+    }
+    for (let node = element.parent; node instanceof DataElement; node = node.parent) {
+      this.objectChange.versionOf(node.identifier)();
+    }
+    this.objectChange.versionOf(element.identifier)();
+    const descendants = collectDataElements(element);
+    for (const descendant of descendants) this.objectChange.versionOf(descendant.identifier)();
+    return descendants;
+  }
+
+  /**
+   * Whether the reader may read the numbers on this piece's bars.
+   *
+   * The same answer that settles whether they may open its sheet: a piece kept to the master
+   * or to a few names has its readings kept with it, wherever those readings are shown.
+   */
+  readonly gaugeNumbersReadable = computed<boolean>(() => {
     const char = this.gameCharacter();
-    const detail = char?.detailDataElement;
-    if (!detail) return [];
-    this.objectChange.versionOf(detail.identifier)();
-    this.objectChange.collectionOf('data')();
-    for (const element of collectDataElements(detail)) this.objectChange.versionOf(element.identifier)();
-    return selectPieceGauges(detail);
+    if (!char) return true;
+    this.objectChange.versionOf(char.identifier)();
+    this.objectChange.trackMyCursor();
+    return this.disclosureService.canView(char);
   });
 
-  readonly buffBadges = computed<BuffBadge[]>(() => {
-    const char = this.gameCharacter();
-    const buffEl = char?.buffDataElement;
-    if (!buffEl) return [];
-    this.objectChange.versionOf(buffEl.identifier)();
-    this.objectChange.collectionOf('data')();
-    for (const element of collectDataElements(buffEl)) this.objectChange.versionOf(element.identifier)();
-    return toBuffBadges(buffEl);
+  readonly gaugeRows = computed<{ gauge: PieceGauge; numbers: string }[]>(() => {
+    const readable = this.gaugeNumbersReadable();
+    return this.pieceGauges().map((gauge) => ({ gauge, numbers: gaugeNumbersOf(gauge, readable) }));
   });
+
+  readonly buffBadges = computed<BuffBadge[]>(
+    () => {
+      const buffEl = this.gameCharacter()?.buffDataElement ?? null;
+      if (this.followedTree(buffEl) === null || !buffEl) return [];
+      return toBuffBadges(buffEl);
+    },
+    { equal: sameEntries }
+  );
+
+  readonly orbitPieceGauges = computed(() => this.pieceGauges().slice(0, MAX_MULTI_ANGLE_RESOURCE_GAUGES));
 
   protected readonly decorFontSizePx = DECOR_BASE_FONT_PX * DECOR_SUPERSAMPLE;
   protected readonly nameFontSizePx = NAME_BASE_FONT_PX * DECOR_SUPERSAMPLE;
   private readonly decorScale = `scale(${(1 / DECOR_SUPERSAMPLE).toFixed(6)})`;
 
   private readonly resourceSnapshot = computed<Map<string, ResourceSnapshot>>(() => {
-    const char = this.gameCharacter();
-    const detail = char?.detailDataElement;
     const snapshot = new Map<string, ResourceSnapshot>();
-    if (!detail) return snapshot;
+    const elements = this.followedTree(this.gameCharacter()?.detailDataElement ?? null);
+    if (elements === null) return snapshot;
 
-    this.objectChange.versionOf(detail.identifier)();
-    this.objectChange.collectionOf('data')();
-    for (const element of collectDataElements(detail)) {
-      this.objectChange.versionOf(element.identifier)();
-      if (!element.isNumberResource) continue;
+    for (const element of elements) {
+      if (!isResourceElement(element)) continue;
       snapshot.set(element.identifier, {
         current: Number(element.currentValue),
         max: Number(element.value),
         inverted: isGaugeInverted(element),
+        playsEffect: playsEffectOnChange(element),
+        playsSound: playsSoundOnChange(element),
+        soundSet: soundSetOnChange(element),
         changedBySelf: this.objectStore.localChangeCountOf(element.identifier),
       });
     }
@@ -545,102 +755,251 @@ export class GameCharacterComponent {
   });
 
   readonly floatingChanges = signal<(ResourceChange & { key: number })[]>([]);
-  readonly hitFlash = signal<'damage' | 'heal' | null>(null);
+  readonly hitFlash = transientSignal<'damage' | 'heal' | null>(null, HIT_FLASH_MS);
 
   private previousResources: Map<string, ResourceSnapshot> | null = null;
   private floatingKey = 0;
   private readonly floatingTimers = new Set<ReturnType<typeof setTimeout>>();
 
-  readonly gaugeStackTransform = computed(
-    () => `${this.billboardTransformGauge()} ${this.decorScale} translateX(-50%)`
+  readonly gaugeStackFacing = computed<BillboardFacing>(() => this.labelStackFacing(this.gaugeFacing()));
+
+  readonly buffStackFacing = computed<BillboardFacing>(() => this.labelStackFacing(this.buffFacing()));
+
+  readonly nameStackFacing = computed<BillboardFacing>(() => this.labelStackFacing(this.nameFacing()));
+
+  readonly floatStackFacing = computed<BillboardFacing>(() =>
+    this.labelStackFacing(this.isPoster() ? NOT_TURNED : this.billboardFacing(56))
   );
 
-  readonly buffStackTransform = computed(() => `${this.billboardTransformBuff()} ${this.decorScale} translateX(-50%)`);
+  readonly floatOrbitFacing = computed<BillboardFacing>(() => this.labelStandFacing(this.floatOrbit()));
 
-  readonly nameStackTransform = computed(() => `${this.billboardTransform()} ${this.decorScale} translateX(-50%)`);
+  private floatOrbit(): BillboardFacing {
+    if (this.isPoster()) return facesAlways(`translateY(${-(this.size() * this.gridSize + 20)}px)`);
+    return this.labelOrbitFacing(56, 96);
+  }
 
-  readonly floatStackTransform = computed(
-    () => `${this.isPoster() ? '' : this.makeBillboardTransform(56)} ${this.decorScale} translateX(-50%)`
+  private readonly gaugePanelHeightEstimate = computed(() =>
+    this.multiAngleResourceBuffOrbitEnabled() ? 0 : this.pieceGauges().length * GAUGE_ROW_HEIGHT_PX
   );
 
-  readonly floatLabelOrbit = computed(() => {
-    if (this.isPoster()) return `translateY(${-(this.size() * this.gridSize + 20)}px)`;
-    return this.labelOrbitTransform(56, 96);
-  });
-
-  private readonly gaugePanelHeightEstimate = computed(() => this.pieceGauges().length * GAUGE_ROW_HEIGHT_PX);
-
-  readonly billboardTransformGauge = computed(() =>
-    this.isPoster() ? '' : this.makeBillboardTransform(GAUGE_STACK_GAP_PX + this.gaugePanelHeightEstimate() / 2)
+  readonly gaugeFacing = computed<BillboardFacing>(() =>
+    this.isPoster() ? NOT_TURNED : this.billboardFacing(GAUGE_STACK_GAP_PX + this.gaugePanelHeightEstimate() / 2)
   );
 
-  readonly gaugeLabelOrbit = computed(() => {
-    if (this.isPoster()) return `translateY(${-(this.size() * this.gridSize + 8 + this.gaugePanelHeightEstimate())}px)`;
-    return this.labelOrbitTransform(
+  readonly gaugeOrbitFacing = computed<BillboardFacing>(() => this.labelStandFacing(this.gaugeOrbit()));
+
+  private gaugeOrbit(): BillboardFacing {
+    if (this.isPoster())
+      return facesAlways(`translateY(${-(this.size() * this.gridSize + 8 + this.gaugePanelHeightEstimate())}px)`);
+    return this.labelOrbitFacing(
       GAUGE_STACK_GAP_PX + this.gaugePanelHeightEstimate(),
       64 + this.gaugePanelHeightEstimate()
     );
+  }
+
+  readonly nameOrbitFacing = computed<BillboardFacing>(() => this.labelStandFacing(this.nameOrbit()));
+
+  private nameOrbit(): BillboardFacing {
+    if (this.isPoster()) return facesAlways(`translateY(${-(this.size() * this.gridSize + 5)}px)`);
+    return this.labelOrbitFacing(30, 60);
+  }
+
+  readonly multiAngleNameOrbitEnabled = computed(() => {
+    return !this.isPoster() && this.tabletopService.mode2d() && this.tabletopService.display().multiAngleEnabled;
   });
 
-  readonly nameLabelOrbit = computed(() => {
-    if (this.isPoster()) return `translateY(${-(this.size() * this.gridSize + 5)}px)`;
-    return this.labelOrbitTransform(30, 60);
+  readonly multiAngleResourceBuffOrbitEnabled = computed(() => {
+    return this.multiAngleNameOrbitEnabled() && this.tabletopService.display().multiAngleResourceBuffEnabled;
   });
-  readonly buffLabelOrbit = computed(() => {
-    if (this.isPoster())
-      return `translateY(${-(this.size() * this.gridSize + 12 + this.gaugePanelHeightEstimate())}px)`;
-    return this.labelOrbitTransform(
-      BUFF_STACK_GAP_PX + this.gaugePanelHeightEstimate(),
-      68 + this.gaugePanelHeightEstimate()
+
+  readonly multiAngleCurvedNameLayout = computed(() =>
+    makeMultiAngleCurvedName(this.multiAngleLabelText(), this.size() * this.gridSize)
+  );
+
+  readonly multiAngleLabelText = computed(() => {
+    if (this.hideBuff() || this.multiAngleResourceBuffOrbitEnabled()) return this.name();
+    const buffNames = this.buffBadges()
+      .map((buff) => buff.name.trim())
+      .filter((name) => name.length > 0)
+      .join('・');
+    if (buffNames.length < 1) return this.name();
+    const leadingBuff = Array.from(buffNames).slice(0, 5).join('');
+    return `${this.name()}/${leadingBuff}`;
+  });
+
+  readonly multiAngleResourceGaugeLayout = computed(() =>
+    makeMultiAngleResourceGauge(this.orbitPieceGauges(), this.size() * this.gridSize)
+  );
+
+  readonly multiAngleBuffOrbitLayout = computed(() => {
+    const name = this.multiAngleCurvedNameLayout();
+    const gauge = this.multiAngleResourceGaugeLayout();
+    const innerExtent = Math.max(name.radius + name.fontSize / 2 + name.strokeWidth / 2, gauge.outerExtent);
+    return makeMultiAngleBuffOrbit(this.buffBadges().length, this.size() * this.gridSize, innerExtent);
+  });
+
+  readonly multiAngleOrbitVisible = computed(
+    () =>
+      this.multiAngleNameOrbitEnabled() &&
+      ((this.name().length > 0 && !this.hideName()) ||
+        (this.multiAngleResourceBuffOrbitEnabled() &&
+          (this.orbitPieceGauges().length > 0 || (!this.hideBuff() && this.buffBadges().length > 0))))
+  );
+
+  readonly multiAngleCurvedNamePathId = computed(
+    () => `multi-angle-curved-name-${this.gameCharacter()?.identifier ?? 'unknown'}`
+  );
+
+  readonly multiAngleNameOrbitAnimation = computed(() => {
+    const display = this.tabletopService.display();
+    return multiAngleOrbitAnimation(
+      multiAngleNameMotionMode(display.multiAngleMotionMode),
+      display.multiAngleRevolutionSeconds,
+      display.multiAnglePauseSeconds
     );
   });
 
+  readonly multiAngleResourceBuffOrbitAnimation = computed(() => {
+    const nameAnimation = this.multiAngleNameOrbitAnimation();
+    return {
+      durationSeconds: nameAnimation.durationSeconds * MULTI_ANGLE_RESOURCE_BUFF_DURATION_FACTOR,
+      timingFunction: nameAnimation.timingFunction,
+    };
+  });
+
+  private readonly multiAngleNamePhase = computed(() =>
+    multiAngleRotationPhase(`${this.gameCharacter()?.identifier ?? 'unknown'}:name`)
+  );
+
+  private readonly multiAngleResourceBuffPhase = computed(() =>
+    multiAngleRotationPhase(`${this.gameCharacter()?.identifier ?? 'unknown'}:resource-buff`)
+  );
+
+  private readonly multiAnglePiecePhase = computed(() =>
+    multiAngleRotationPhase(`${this.gameCharacter()?.identifier ?? 'unknown'}:piece`)
+  );
+
+  readonly multiAngleNameOrbitDelaySeconds = computed(
+    () => -this.multiAngleNamePhase() * this.multiAngleNameOrbitAnimation().durationSeconds
+  );
+
+  readonly multiAngleResourceBuffOrbitDelaySeconds = computed(
+    () => -this.multiAngleResourceBuffPhase() * this.multiAngleResourceBuffOrbitAnimation().durationSeconds
+  );
+
+  readonly multiAnglePieceRevolutionSeconds = computed(() => {
+    const seconds = this.tabletopService.display().multiAnglePieceRevolutionSeconds;
+    return Number.isFinite(seconds)
+      ? Math.min(300, Math.max(5, seconds))
+      : DEFAULT_MULTI_ANGLE_PIECE_REVOLUTION_SECONDS;
+  });
+
+  readonly multiAnglePieceRotationAnimation = computed(() => {
+    const display = this.tabletopService.display();
+    return multiAngleOrbitAnimation(
+      multiAnglePieceMotionMode(display.multiAngleMotionMode),
+      this.multiAnglePieceRevolutionSeconds(),
+      display.multiAnglePauseSeconds
+    );
+  });
+
+  readonly multiAnglePieceRotationDelaySeconds = computed(
+    () => -this.multiAnglePiecePhase() * this.multiAnglePieceRotationAnimation().durationSeconds
+  );
+
+  readonly buffOrbitFacing = computed<BillboardFacing>(() => this.labelStandFacing(this.buffOrbit()));
+
+  private buffOrbit(): BillboardFacing {
+    if (this.isPoster())
+      return facesAlways(`translateY(${-(this.size() * this.gridSize + 12 + this.gaugePanelHeightEstimate())}px)`);
+    return this.labelOrbitFacing(
+      BUFF_STACK_GAP_PX + this.gaugePanelHeightEstimate(),
+      68 + this.gaugePanelHeightEstimate()
+    );
+  }
+
   private readonly buffPanelHeightEstimate = computed(() => {
-    if (this.hideBuff() || this.buffNum() < 1) return 0;
+    if (this.multiAngleResourceBuffOrbitEnabled() || this.hideBuff() || this.buffNum() < 1) return 0;
     if (this.buffViewMode() === 'detail') return this.buffChildren().length * BUFF_DETAIL_ROW_HEIGHT_PX;
     if (this.buffViewMode() === 'count') return BUFF_BADGE_ROW_HEIGHT_PX;
     return Math.ceil(this.buffBadges().length / BUFF_BADGES_PER_ROW) * BUFF_BADGE_ROW_HEIGHT_PX;
   });
 
+  protected multiAngleBuffOrbitTransform(angle: number, radius: number): string {
+    return `rotate(${angle}deg) translateY(${-radius}px)`;
+  }
+
   private readonly pieceImageHeightEstimate = computed(() => {
     if (!this.gameCharacter() || this.imageFile().url.length < 1) return 0;
     if (this.specifyKomaImageFlag()) return this.komaImageHeightSignal();
-    const natural = this.imageNaturalSize();
+    const natural = this.imageView.naturalSize();
     if (!natural) return this.size() * this.gridSize;
     return (this.size() * this.gridSize * natural.height) / natural.width;
   });
 
-  readonly targetLabelOrbit = computed(() => {
-    const stack = this.gaugePanelHeightEstimate() + this.buffPanelHeightEstimate();
-    if (this.isPoster()) return `translateY(${-(this.size() * this.gridSize + 20 + stack)}px)`;
-    return this.screenLiftOrbit(TARGET_STACK_GAP_PX + stack, 84 + stack);
+  readonly targetOrbitFacing = computed<BillboardFacing>(() => {
+    const stand = `translateX(${(this.size() * this.gridSize) / 2}px) `;
+    const orbit = this.targetOrbit();
+    return (rotation) => stand + orbit(rotation);
   });
 
-  readonly targetStackTransform = computed(
-    () => `${this.isPoster() ? '' : this.makeBillboardTransform(0)} ${this.decorScale} translateX(-50%)`
-  );
-
-  private screenLiftOrbit(screenLift3d: number, distance2d: number): string {
-    return makeScreenLiftTransform({
-      rotation: this.uiSignalService.tableViewRotation(),
-      pieceRotate: this.rotateSignal(),
-      pieceRoll: this.rollSignal(),
-      worldHeight3d: this.pieceImageHeightEstimate(),
-      screenLift3d,
-      distance2d,
-      mode2d: this.mode2dEnabled(),
-    });
+  private targetOrbit(): BillboardFacing {
+    const stack = this.gaugePanelHeightEstimate() + this.buffPanelHeightEstimate();
+    if (this.isPoster()) return facesAlways(`translateY(${-(this.size() * this.gridSize + 20 + stack)}px)`);
+    return this.screenLiftFacing(TARGET_STACK_GAP_PX + stack, 84 + stack);
   }
 
-  private makeBillboardTransform(verticalOffset3D: number): string {
-    return makeBillboardTransform({
-      rotation: this.uiSignalService.tableViewRotation(),
-      pieceRotate: this.rotateSignal(),
-      pieceRoll: this.rollSignal(),
-      parentInverseRotation: 'rotateY(90deg) rotateZ(90deg) rotateY(-90deg)',
-      verticalOffset3D,
-      mode2d: this.mode2dEnabled(),
-    });
+  readonly targetStackFacing = computed<BillboardFacing>(() =>
+    this.labelStackFacing(this.isPoster() ? NOT_TURNED : this.billboardFacing(0))
+  );
+
+  private screenLiftFacing(screenLift3d: number, distance2d: number): BillboardFacing {
+    const pieceRotate = this.rotateSignal();
+    const pieceRoll = this.rollSignal();
+    const worldHeight3d = this.pieceImageHeightEstimate();
+    const mode2d = this.mode2dEnabled();
+    return (rotation) =>
+      makeScreenLiftTransform({
+        rotation,
+        pieceRotate,
+        pieceRoll,
+        worldHeight3d,
+        screenLift3d,
+        distance2d,
+        mode2d,
+      });
+  }
+
+  /**
+   * The frame everything above the pedestal hangs from.
+   *
+   * The existing flat/multi-angle renderer takes the piece's turn back out on each billboard.
+   * Counter-rotating this shared 3D frame as well makes the image plane disappear in some
+   * browsers when the table switches to 2D, so the frame itself keeps the original transform.
+   */
+  readonly standTransform = computed(() => {
+    if (this.isPoster()) return 'translateY(-50%)';
+    return (
+      'rotateY(90deg) rotateZ(-90deg) rotateY(-90deg) ' +
+      `translateY(-50%) translateY(${-this.altitude() * this.gridSize}px)`
+    );
+  });
+
+  private billboardFacing(verticalOffset3D: number, turnsWithPiece = false): BillboardFacing {
+    // In 2D every billboard cancels the piece's turn, except the picture when the table asks it
+    // to turn with the piece. This also composes with the multi-angle image rotation.
+    const pieceRotate = this.mode2dEnabled() && turnsWithPiece ? 0 : this.rotateSignal();
+    const pieceRoll = this.rollSignal();
+    const mode2d = this.mode2dEnabled();
+    return (rotation) =>
+      makeBillboardTransform({
+        rotation,
+        pieceRotate,
+        pieceRoll,
+        parentInverseRotation: 'rotateY(90deg) rotateZ(90deg) rotateY(-90deg)',
+        verticalOffset3D,
+        mode2d,
+      });
   }
 
   readonly movableOption = signal<MovableOption>({});
@@ -648,40 +1007,42 @@ export class GameCharacterComponent {
   readonly rotableOption = signal<RotableOption>({});
 
   readonly pedestalHexParams = computed<HexFlowerParams | null>(() => {
-    this.objectChange.versionOf(this.tabletopService.tableSelecter.identifier)();
-    this.objectChange.versionOf(this.tabletopService.currentTable.identifier)();
-    const char = this.gameCharacter();
-    if (!char) return null;
-    this.objectChange.versionOf(char.identifier)();
-    const gridType = this.tabletopService.currentTable.gridType;
+    const gridType = this.tabletopService.gridType();
+    const size = this.size();
+    if (!this.gameCharacter()) return null;
     if (!isHexGrid(gridType)) return null;
-    return calcHexFlowerParams(this.size(), this.gridSize, isFlatTopGrid(gridType));
+    return calcHexFlowerParams(size, this.gridSize, isFlatTopGrid(gridType));
   });
 
-  pedestalStyle(borderColor: string): Record<string, string> {
+  private readonly pedestalRing = computed<Record<string, string> | null>(() => {
     const params = this.pedestalHexParams();
-    if (params) {
-      const { outline, bbox, L } = params;
-      const W = bbox.maxX - bbox.minX;
-      const H = bbox.maxY - bbox.minY;
-      const clipPath = buildHexRingClipPath(outline, bbox, 6);
-      return {
-        background: borderColor,
-        clipPath,
-        border: 'none',
-        borderRadius: '0',
-        width: `${W}px`,
-        height: `${H}px`,
-        left: `${bbox.minX + L / 2}px`,
-        top: `${bbox.minY + L / 2}px`,
-      };
-    }
-    return { border: `solid 6px ${borderColor}` };
+    if (!params) return null;
+    const { outline, bbox, L } = params;
+    const W = bbox.maxX - bbox.minX;
+    const H = bbox.maxY - bbox.minY;
+    return {
+      clipPath: buildHexRingClipPath(outline, bbox, 6),
+      border: 'none',
+      borderRadius: '0',
+      width: `${W}px`,
+      height: `${H}px`,
+      left: `${bbox.minX + L / 2}px`,
+      top: `${bbox.minY + L / 2}px`,
+    };
+  });
+
+  private pedestalStyleOf(borderColor: string): Record<string, string> {
+    const ring = this.pedestalRing();
+    return ring ? { background: borderColor, ...ring } : { border: `solid 6px ${borderColor}` };
   }
 
-  // The pedestal styles ran as getters on every change-detection pass and built a fresh
-  // record each time. Computed, they hand back the same object until something changes,
-  // which saves a thousand allocations and as many clip paths a pass with three hundred characters on the table.
+  protected readonly pedestalStyleShown = computed(() => this.pedestalStyleOf('#FFCC80'));
+  protected readonly pedestalStyleHidden = computed(() => this.pedestalStyleOf('#A0E0FF'));
+  protected readonly pedestalStyleTargeted = computed(() => this.pedestalStyleOf('#ff3b30'));
+
+  // Computed rather than read as getters, the pedestal styles hand back the same object until
+  // something changes, instead of a fresh record on every change-detection pass: a thousand
+  // allocations and as many clip paths a pass with three hundred characters on the table.
   protected readonly pedestalOuterStyle = computed<Record<string, string>>(() => {
     const params = this.pedestalHexParams();
     if (!params) return {} as Record<string, string>;
@@ -731,25 +1092,155 @@ export class GameCharacterComponent {
   private highlightTimer: ReturnType<typeof setTimeout> | undefined;
   private unhighlightTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * The piece's height in grid cells, its base position and altitude together, rounded to one
+   * decimal for the elevation label.
+   */
   get elevation(): number {
     const char = this.gameCharacter();
     if (!char) return 0;
     return +((char.posZ + this.altitude() * this.gridSize) / this.gridSize).toFixed(1);
   }
 
+  /** How far a chat bubble over the piece is lifted, in pixels; always 0 for this component. */
   get chatBubbleAltitude(): number {
     return 0;
   }
 
+  /** Stops the browser's native drag of the piece's images, so only the movable directive moves it. */
   onDragstart(e: DragEvent) {
     e.stopPropagation();
     e.preventDefault();
   }
 
+  /**
+   * Takes every press straight back off the piece's own input handler, which has nothing to do with
+   * a move or a release.
+   *
+   * The handler adds document-wide move and release listeners on each press, and cancelling removes
+   * them at once. The press itself is not stopped: moving and turning the piece are left to the
+   * movable and rotable directives, which listen for it themselves.
+   */
   onInputStart(_e: MouseEvent | TouchEvent) {
     if (this.input) this.input.cancel();
   }
 
+  private rightDrag: PieceRightDrag | null = null;
+  private rightDragCenterMarker: HTMLElement | null = null;
+  private nativeContextMenuSuppressionTimer: ReturnType<typeof setTimeout> | null = null;
+  private nativeContextMenuSuppressor: ((event: MouseEvent) => void) | null = null;
+
+  protected onPiecePointerDown(event: PointerEvent): void {
+    this.checkKey(event);
+    if (event.button !== 2 || !this.mode2dEnabled()) return;
+
+    this.selectionSignalService.cancelTableGesture();
+    this.rightDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      dragged: false,
+    };
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+  }
+
+  protected onPiecePointerMove(event: PointerEvent): void {
+    const drag = this.rightDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    if (!drag.dragged) {
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      drag.dragged = dx * dx + dy * dy > RIGHT_DRAG_THRESHOLD_PX * RIGHT_DRAG_THRESHOLD_PX;
+      if (!drag.dragged) return;
+      // Some platforms raise contextmenu on the press rather than the release. Once this is
+      // known to be a drag, remove that early menu and replace it at the release point.
+      this.contextMenuService.close();
+    }
+
+    this.showRightDragCenterMarker(event.clientX, event.clientY);
+    if (event.cancelable) event.preventDefault();
+  }
+
+  protected onPiecePointerUp(event: PointerEvent): void {
+    const drag = this.rightDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    this.releasePiecePointer(event);
+    this.removeRightDragCenterMarker();
+    this.rightDrag = null;
+    if (!drag.dragged) return;
+
+    if (event.cancelable) event.preventDefault();
+    event.stopPropagation();
+    this.suppressNextNativeContextMenu();
+
+    const menuPosition: PointerCoordinate = { x: event.clientX, y: event.clientY, z: 0 };
+    const anchor = this.pieceScreenCenter(menuPosition);
+    this.openCharacterContextMenu(menuPosition, menuPosition, anchor);
+  }
+
+  protected onPiecePointerCancel(event: PointerEvent): void {
+    if (!this.rightDrag || this.rightDrag.pointerId !== event.pointerId) return;
+    this.releasePiecePointer(event);
+    this.removeRightDragCenterMarker();
+    this.rightDrag = null;
+  }
+
+  private showRightDragCenterMarker(x: number, y: number): void {
+    let marker = this.rightDragCenterMarker;
+    if (!marker) {
+      marker = document.createElement('div');
+      marker.dataset['pieceRightDragCenter'] = '';
+      marker.className = 'piece-right-drag-center';
+      marker.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(marker);
+      this.rightDragCenterMarker = marker;
+    }
+    marker.style.left = `${x}px`;
+    marker.style.top = `${y}px`;
+  }
+
+  private removeRightDragCenterMarker(): void {
+    this.rightDragCenterMarker?.remove();
+    this.rightDragCenterMarker = null;
+  }
+
+  private releasePiecePointer(event: PointerEvent): void {
+    const element = event.currentTarget as HTMLElement | null;
+    if (element?.hasPointerCapture?.(event.pointerId)) element.releasePointerCapture(event.pointerId);
+  }
+
+  private suppressNextNativeContextMenu(): void {
+    this.clearNativeContextMenuSuppression();
+    const suppressor = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.clearNativeContextMenuSuppression();
+    };
+    this.nativeContextMenuSuppressor = suppressor;
+    document.addEventListener('contextmenu', suppressor, true);
+    // A contextmenu generated by this release is dispatched in the same task. Do not let this
+    // guard consume a separate right click made later.
+    this.nativeContextMenuSuppressionTimer = setTimeout(() => this.clearNativeContextMenuSuppression(), 0);
+  }
+
+  private clearNativeContextMenuSuppression(): void {
+    if (this.nativeContextMenuSuppressor) {
+      document.removeEventListener('contextmenu', this.nativeContextMenuSuppressor, true);
+      this.nativeContextMenuSuppressor = null;
+    }
+    if (this.nativeContextMenuSuppressionTimer !== null) {
+      clearTimeout(this.nativeContextMenuSuppressionTimer);
+      this.nativeContextMenuSuppressionTimer = null;
+    }
+  }
+
+  /**
+   * Opens the character's context menu at the pointer, if the reader may view the piece.
+   *
+   * When several pieces are selected the shared selection menu opens instead. Seen from above with
+   * a radial menu style chosen, the menu opens as a radial menu around the piece.
+   */
   onContextMenu(e: Event) {
     e.stopPropagation();
     e.preventDefault();
@@ -761,6 +1252,17 @@ export class GameCharacterComponent {
     if (!this.pointerDeviceService.isAllowedToOpenContextMenu) return;
 
     const position = this.pointerDeviceService.pointers[0];
+    this.openCharacterContextMenu(position);
+  }
+
+  private openCharacterContextMenu(
+    position: PointerCoordinate,
+    radialCenter?: { x: number; y: number },
+    radialAnchor?: { x: number; y: number }
+  ): void {
+    const char = this.gameCharacter();
+    if (!char || !this.disclosureService.canView(char)) return;
+
     if (this.pieceContextMenu.openForSelection(char, this.gridSize, position)) return;
     const overlapEntries = buildOverlapContextMenu(
       this.tabletopOverlap,
@@ -769,8 +1271,10 @@ export class GameCharacterComponent {
       position.y,
       this.translateFn
     );
-    const surfaceEntries = buildSurfaceSwitchContextMenu(char, this.tabletopService.currentTable, this.translateFn);
-    const baseMenu = buildGameCharacterContextMenu(
+    const table = this.tabletopService.currentTable;
+    const display = this.tabletopService.display();
+    const surfaceEntries = buildSurfaceSwitchContextMenu(char, table, this.translateFn);
+    const menu = buildGameCharacterContextMenuModel(
       char,
       this.gridSize,
       this.inventoryService,
@@ -784,16 +1288,64 @@ export class GameCharacterComponent {
         onInvokeRangeShape: (value) => this.rangeShapeInvoke.spawnForCharacter(char, value),
         onInvokeEffect: (name) => this.invokeEffect(char, name),
         onDeployDice: () => this.characterDice.deploy(char),
+        onPlanMove: this.moveRangeService.canPlan(char) ? () => void this.movePlan.begin(char) : undefined,
+        onToggleTarget: () => this.toggleTarget(),
+        onClearTargets: this.anythingTargeted() ? () => this.clearEveryTarget() : undefined,
       },
       this.translateFn,
       overlapEntries,
-      this.buffViewMode()
+      this.buffViewMode(),
+      surfaceEntries
     );
-    this.contextMenuService.open(
-      position,
-      surfaceEntries.length > 0 ? [...baseMenu, ContextMenuSeparator, ...surfaceEntries] : baseMenu,
-      this.name()
-    );
+    if (!this.tabletopService.mode2d() || display.tabletopMenuStyle === 'standard') {
+      this.contextMenuService.open(position, menu.actions, this.name());
+      return;
+    }
+
+    const rootBounds = this.rootElementRef()?.nativeElement.getBoundingClientRect();
+    const menuCenter = radialCenter ?? this.pieceScreenCenter(position, rootBounds);
+    const menuClearanceRadius = rootBounds ? this.contextMenuClearanceRadius(rootBounds) : 0;
+    const menuOcclusionHalfExtent = rootBounds ? Math.max(rootBounds.width, rootBounds.height) / 2 : 0;
+    const args = [
+      menuCenter,
+      menu.actions,
+      menu.radialGroups,
+      this.name(),
+      display.tabletopMenuStyle === 'radial',
+      display.radialMenuRotationSpeed,
+      multiAngleFontScaleFactor(display.multiAngleFontScale),
+      menuClearanceRadius,
+      menuOcclusionHalfExtent,
+    ] as const;
+    if (radialAnchor) {
+      this.contextMenuService.openRadial(...args, radialAnchor);
+    } else {
+      this.contextMenuService.openRadial(...args);
+    }
+  }
+
+  private pieceScreenCenter(fallback: { x: number; y: number }, rootBounds?: DOMRect): { x: number; y: number } {
+    const bounds = rootBounds ?? this.rootElementRef()?.nativeElement.getBoundingClientRect();
+    return bounds
+      ? { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
+      : { x: fallback.x, y: fallback.y };
+  }
+
+  private contextMenuClearanceRadius(rootBounds: DOMRect): number {
+    const pieceDiameter = this.size() * this.gridSize;
+    const renderedDiameter = Math.max(rootBounds.width, rootBounds.height);
+    if (pieceDiameter <= 0 || renderedDiameter <= 0) return 0;
+
+    const renderedScale = renderedDiameter / pieceDiameter;
+    const curvedName = this.multiAngleCurvedNameLayout();
+    const nameExtent = curvedName.radius + curvedName.fontSize / 2 + curvedName.strokeWidth / 2;
+    const buffOrbit = this.multiAngleBuffOrbitLayout();
+    const resourceBuffExtent =
+      this.multiAngleResourceBuffOrbitEnabled() && !this.hideBuff() && this.buffBadges().length > 0
+        ? buffOrbit.radius + buffOrbit.iconSize / 2
+        : 0;
+    if (this.size() <= 1) return resourceBuffExtent * renderedScale;
+    return Math.max(nameExtent, resourceBuffExtent) * renderedScale;
   }
 
   /** How it goes down, set only while an effect is aimed at it. */
@@ -808,20 +1360,17 @@ export class GameCharacterComponent {
     this.floatingChanges.update((current) => [...current, ...entries].slice(-FLOATING_CHANGE_LIMIT));
 
     const kind = entries.some((entry) => entry.kind === 'damage') ? 'damage' : 'heal';
-    this.hitFlash.set(kind);
-    SoundEffect.playLocal(resourceChangeSound(kind, loudestChangeRatio(entries)));
+    this.hitFlash.show(kind, kind === 'damage' ? HIT_FLASH_MS : HEAL_AURA_MS);
 
+    const heard = entries.filter((entry) => entry.playsSound);
+    const loudest = loudestChange(heard);
+    // One line is heard, so all three of what is heard come from it. Taken apart, a point of
+    // damage alongside a large heal would play as a large hurt, in the heal's own voice.
+    if (loudest) SoundEffect.playLocal(resourceChangeSound(loudest.kind, loudest.ratio, loudest.soundSet));
+
+    const shown = entries.filter((entry) => entry.playsEffect);
     const char = this.gameCharacter();
-    if (char) this.effectAutoPlay.play(char, entries);
-
-    const flashTimer = setTimeout(
-      () => {
-        this.floatingTimers.delete(flashTimer);
-        this.hitFlash.set(null);
-      },
-      kind === 'damage' ? HIT_FLASH_MS : HEAL_AURA_MS
-    );
-    this.floatingTimers.add(flashTimer);
+    if (char && shown.length > 0) this.effectAutoPlay.play(char, shown);
 
     const keys = new Set(entries.map((entry) => entry.key));
     const floatTimer = setTimeout(() => {
@@ -838,15 +1387,95 @@ export class GameCharacterComponent {
     return char.zindex;
   });
 
+  /** Brings the piece to the top and plays the pick-up sound when a drag or turn starts. */
   onMove() {
     this.gameCharacter()?.toTopmost();
     SoundEffect.play(PresetSound.piecePick);
   }
 
+  /** Plays the put-down sound when a drag or turn ends. */
   onMoved() {
     SoundEffect.play(PresetSound.piecePut);
   }
 
+  /** Whether this piece is the one whose move is being worked out, and so is not to be dragged. */
+  readonly isPlanningMove = computed(() => {
+    const plan = this.movePlan.plan();
+    return plan != null && plan.characterIdentifier === this.gameCharacter()?.identifier;
+  });
+
+  /**
+   * Working a move out, rather than carrying the piece to where it should end up.
+   *
+   * The press is turned away rather than followed: a planned move leaves the piece standing
+   * while the way is drawn, and a piece that came along with the hand would be standing
+   * somewhere the way was never drawn from. Turned away once the press has finished being
+   * taken up, not in the middle of it: the drag puts the piece's transition and its
+   * collidable layer aside after saying it has started, and a refusal that arrives first is
+   * undone by the very setting up it refused.
+   *
+   * A room that holds pieces to a way they could have walked works out every move, since
+   * being sent back after the fact and being shown the way beforehand are the same rule, and
+   * having them behave differently only depending on which hand opened the move made two
+   * features out of one.
+   *
+   * Shift asks for the other kind of move to the room's own: the way drawn out beforehand
+   * where a press would carry the piece, and the piece carried where a press would draw it.
+   */
+  onGrab(event: PointerEvent) {
+    if (event.altKey) return;
+    if (this.asksForTheOtherMove(event) === this.isStrictMove()) return;
+    const character = this.gameCharacter();
+    if (!character || this.isLock) return;
+    if (!this.movePlan.begin(character)) return;
+    queueMicrotask(() => this.movableRef()?.cancel());
+  }
+
+  /**
+   * Whether the press asks for the other kind of move to the one the room works in.
+   *
+   * Shift asks for it. In a room that holds pieces to a way they could have walked, it is the
+   * game master's to ask: a rule anybody at the table could step out of by holding a key down
+   * is not a rule the table is held to.
+   */
+  private asksForTheOtherMove(event: PointerEvent): boolean {
+    if (!event.shiftKey) return false;
+    return !this.isStrictMove() || PeerCursor.isMyselfGameMaster;
+  }
+
+  private isStrictMove(): boolean {
+    return this.objectStore.get<Config>('Config')?.moveStrict === true;
+  }
+
+  /** Starts carrying the piece: raises it, shows how far it may move and fires its pick-up triggers. */
+  onPickUp() {
+    this.onMove();
+    const character = this.gameCharacter();
+    if (!character) return;
+    this.moveRangeService.show(character);
+    this.triggerFire.pickedUp(character);
+  }
+
+  /**
+   * Puts the carried piece down: plays the put-down sound, hides the move range and fires its
+   * put-down triggers.
+   */
+  onPutDown() {
+    this.onMoved();
+    this.moveRangeService.hide();
+    const character = this.gameCharacter();
+    if (character) this.triggerFire.putDown(character);
+  }
+
+  /** Hides the move range once the press on the piece ends, whether or not it was dragged. */
+  onLetGo() {
+    this.moveRangeService.hide();
+  }
+
+  /**
+   * Aims at the piece on an Alt press, or clears every aim on Shift+Alt, swallowing the press so it
+   * does not also start a drag.
+   */
   checkKey(event: KeyboardEvent | MouseEvent) {
     const key_event = (event || window.event) as KeyboardEvent | MouseEvent;
     const key_shift = key_event.shiftKey;
@@ -857,23 +1486,37 @@ export class GameCharacterComponent {
     if (key_shift && key_alt) {
       key_event.preventDefault();
       key_event.stopPropagation();
-      const objects = this.objectStore.getObjects(GameCharacter);
-      for (const object of objects) {
-        object.targeted = false;
-        this.uiSignalService.notifyTargetChange(object.identifier, object.aliasName);
-      }
+      this.clearEveryTarget();
       return;
     }
 
     if (key_alt) {
       key_event.preventDefault();
       key_event.stopPropagation();
-      const char = this.gameCharacter();
-      if (char) {
-        char.targeted = !char.targeted;
-        this.uiSignalService.notifyTargetChange(char.identifier, char.aliasName);
-      }
+      this.toggleTarget();
     }
+  }
+
+  /** Marks the piece as one an effect is aimed at, or takes the mark off it. */
+  toggleTarget(): void {
+    const char = this.gameCharacter();
+    if (!char) return;
+    char.targeted = !char.targeted;
+    this.uiSignalService.notifyTargetChange(char.identifier, char.aliasName);
+  }
+
+  /** Takes the aim mark off every character in the room, signalling each change so its marker redraws. */
+  clearEveryTarget(): void {
+    for (const object of this.objectStore.getObjects(GameCharacter)) {
+      if (!object.targeted) continue;
+      object.targeted = false;
+      this.uiSignalService.notifyTargetChange(object.identifier, object.aliasName);
+    }
+  }
+
+  /** Whether anything on the table is aimed at, which is what makes clearing worth offering. */
+  private anythingTargeted(): boolean {
+    return this.objectStore.getObjects(GameCharacter).some((object) => object.targeted);
   }
 
   /** Fires an effect from a character sheet. It is looked up by name, so the same row works in any room. */
@@ -884,48 +1527,18 @@ export class GameCharacterComponent {
 
   private showDetail(gameObject: GameCharacter) {
     if (!this.disclosureService.canView(gameObject)) return;
-    const coordinate = this.pointerDeviceService.pointers[0];
     const title = sheetPanelTitle(this.translateFn('feature.character.panel.sheet'), gameObject.name);
-    const option: PanelOption = {
-      title: title,
-      ...sheetPanelBox(coordinate, 800, 600),
-    };
-    const component = this.panelService.open<GameCharacterSheetComponent>(GameCharacterSheetComponent, option);
-    component.tabletopObject = gameObject;
+    this.objectPanels.openSheet(gameObject, title, { width: 800, height: 600 });
   }
 
   private showChatPalette(gameObject: GameCharacter) {
     if (!this.disclosureService.canView(gameObject)) return;
-    const coordinate = this.pointerDeviceService.pointers[0];
-    const option: PanelOption = {
-      title: this.translateFn('feature.character.panel.chatPaletteWithName', { name: gameObject.name }),
-      ...sheetPanelBox(coordinate, 760, 500),
-    };
-    this.panelService.openLazy(
-      () => import('@axe/features/chat/chat-palette/chat-palette.component').then((m) => m.ChatPaletteComponent),
-      option,
-      (component) => component.character.set(gameObject)
-    );
+    this.objectPanels.openChatPalette(gameObject);
   }
 
   private showRemoteController(gameObject: GameCharacter) {
     if (!this.disclosureService.canView(gameObject)) return;
-    const coordinate = this.pointerDeviceService.pointers[0];
-    const option: PanelOption = {
-      title: this.translateFn('feature.character.panel.remoteControllerWithName', { name: gameObject.name }),
-      left: coordinate.x - 250,
-      top: coordinate.y - 175,
-      width: 700,
-      height: 600,
-    };
-    this.panelService.openLazy(
-      () =>
-        import('@axe/features/controller/remote-controller/remote-controller.component').then(
-          (m) => m.RemoteControllerComponent
-        ),
-      option,
-      (component) => component.character.set(gameObject)
-    );
+    this.objectPanels.openRemoteController(gameObject);
   }
 
   private showBuffEdit(gameObject: GameCharacter) {
@@ -974,4 +1587,23 @@ export class GameCharacterComponent {
     }
     return count;
   });
+}
+
+/**
+ * The same list, or one holding entries of the same values in the same order.
+ *
+ * The bars and buff icons are drawn from those values alone, so a list worked out again from data
+ * that did not change them is kept as it was and nothing drawn from it is drawn again.
+ */
+function sameEntries<T extends object>(a: readonly T[], b: readonly T[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((entry, index) => sameFields(entry, b[index]));
+}
+
+/** Whether two flat records hold the same keys with the same values. */
+function sameFields(a: object, b: object): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
 }

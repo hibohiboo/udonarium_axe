@@ -1,13 +1,36 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ChatPreferencesService } from '@axe/application/chat/chat-preferences.service';
+import { ChatTickerSelectionService } from '@axe/application/chat/chat-ticker-selection.service';
+import {
+  DEFAULT_SYSTEM_AVATAR_URL,
+  DEFAULT_SYSTEM_DICE_AVATAR_URL,
+  NO_SYSTEM_AVATAR,
+  SystemAvatarService,
+} from '@axe/application/chat/system-avatar.service';
+import { encodeI18nMessage } from '@axe/application/i18n/i18n-message';
+import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
+import { RolePermissionService } from '@axe/application/permission/role-permission.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { TabletopService } from '@axe/application/tabletop/tabletop.service';
+import { TabletopDisplayService } from '@axe/application/tabletop/tabletop-display.service';
+import { ContextMenuAction, ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { UiSignalService } from '@axe/application/ui/ui-signal.service';
+import { ViewModePreferenceService } from '@axe/application/ui/view-mode-preference.service';
+import { ViewportService } from '@axe/application/ui/viewport.service';
 import { emitFileLoaded } from '@axe/core/event/domain-events';
 import { ImageStorage } from '@axe/core/storage/image-storage';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { ChatMessage } from '@axe/domain/chat/chat-message';
+import { ChatTab } from '@axe/domain/chat/chat-tab';
+import { ChatTabList } from '@axe/domain/chat/chat-tab-list';
+import { PeerCursor } from '@axe/domain/peer/peer-cursor';
+import { PeerRole } from '@axe/domain/peer/peer-role';
 import { TextNote } from '@axe/domain/tabletop/text-note';
 import { ChatMessageComponent } from '@axe/features/chat/chat-message/chat-message.component';
+import { beMyself } from '@axe/testing/peer-context-stub';
 import { TEST_PROVIDERS } from '@axe/testing/test-providers';
+import type { MockInstance } from 'vitest';
 
 describe('ChatMessageComponent', () => {
   let component: ChatMessageComponent;
@@ -53,6 +76,74 @@ describe('ChatMessageComponent', () => {
     }
   });
 
+  it('drops the cover on a secret roll as soon as the tag loses it', () => {
+    // The reveal changes only the tag. Nothing else drawn while the line is hidden depends on
+    // that message, so without a version to watch the cover would stay on until something
+    // else draws.
+    vi.spyOn(TestBed.inject(RolePermissionService), 'canSeeHidden', 'get').mockReturnValue(false);
+
+    const message = new ChatMessage();
+    message.initialize();
+    message.from = 'someone-else';
+    // Both, or an unset originFrom matches the unset user id of the peer under test.
+    message.originFrom = 'someone-else';
+    message.to = '';
+    message.name = '<Secret-BCDice：テスト>';
+    message.tag = 'system secret';
+    message.imageIdentifier = '';
+    message.messColor = '#000000';
+    message.text = 'DiceBot : (1d6) → 4';
+    fixture.componentRef.setInput('chatMessage', message);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).not.toContain('→ 4');
+
+    message.tag = 'system';
+    TestBed.inject(ObjectChangeService).notifyChanged(message.identifier);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('→ 4');
+  });
+
+  describe('opening a line that was kept back', () => {
+    function saySecret(tab: ChatTab, text: string, timestamp: number): ChatMessage {
+      return tab.addMessage({ from: 'me', name: text, text, timestamp, tag: 'system-message secret' });
+    }
+
+    it('moves the opened line to the end of the tab it was said in', () => {
+      const tab = new ChatTab();
+      tab.initialize();
+      try {
+        const secret = saySecret(tab, '隠しダイス → 6', 1000);
+        tab.addMessage({ from: 'someone-else', name: 'あと', text: 'そのあとの発言', timestamp: 1001 });
+        fixture.componentRef.setInput('chatMessage', secret);
+
+        component.discloseMessage();
+
+        expect(secret.isSecret).toBe(false);
+        expect(tab.chatMessages[tab.chatMessages.length - 1]).toBe(secret);
+      } finally {
+        tab.destroy();
+      }
+    });
+
+    it('keeps the time the line was said', () => {
+      const tab = new ChatTab();
+      tab.initialize();
+      try {
+        const secret = saySecret(tab, '隠しダイス → 6', 1000);
+        tab.addMessage({ from: 'someone-else', name: 'あと', text: 'そのあとの発言', timestamp: 1001 });
+        fixture.componentRef.setInput('chatMessage', secret);
+
+        component.discloseMessage();
+
+        expect(secret.timestamp).toBe(1000);
+      } finally {
+        tab.destroy();
+      }
+    });
+  });
+
   it('takes a portrait that arrives later into the thumbnail', () => {
     const identifier = 'late-arriving-image';
     const message = new ChatMessage();
@@ -87,6 +178,264 @@ describe('ChatMessageComponent', () => {
     } finally {
       ImageStorage.instance.delete(identifier);
     }
+  });
+
+  describe('the bubble behind a line', () => {
+    function bubbleColourOf(message: ChatMessage): string | null {
+      fixture.componentRef.setInput('chatMessage', message);
+      fixture.detectChanges();
+      const bubble = fixture.nativeElement.querySelector('[style*="background-color"]') as HTMLElement | null;
+      return bubble?.style.backgroundColor ?? null;
+    }
+
+    it('is the same for a roll as for the line that asked for it', () => {
+      const spoken = new ChatMessage();
+      spoken.initialize();
+      spoken.from = 'roller-user';
+      spoken.name = 'アリス';
+      spoken.text = '2d6';
+      spoken.messColor = '#006633';
+
+      const rolled = new ChatMessage();
+      rolled.initialize();
+      rolled.from = 'System-BCDice';
+      rolled.originFrom = 'roller-user';
+      rolled.tag = 'system';
+      rolled.name = '<BCDice：アリス>';
+      rolled.text = 'DiceBot : (2D6) → 9';
+      rolled.messColor = '#006633';
+
+      const spokenColour = bubbleColourOf(spoken);
+
+      expect(spokenColour).toBeTruthy();
+      expect(bubbleColourOf(rolled)).toBe(spokenColour);
+    });
+  });
+
+  describe('the system avatar', () => {
+    function systemMessage(): ChatMessage {
+      const message = new ChatMessage();
+      message.initialize();
+      message.from = 'System';
+      message.name = 'システム';
+      message.text = 'ようこそ';
+      return message;
+    }
+
+    function dicebotMessage(): ChatMessage {
+      const message = new ChatMessage();
+      message.initialize();
+      message.from = 'System-BCDice';
+      message.tag = 'system';
+      message.text = '2D6 → 7';
+      return message;
+    }
+
+    it('stands in for a system message with the picture the room uses', () => {
+      fixture.componentRef.setInput('chatMessage', systemMessage());
+      fixture.detectChanges();
+
+      const avatar = fixture.nativeElement.querySelector('img') as HTMLImageElement | null;
+      expect(avatar?.getAttribute('src')).toBe(DEFAULT_SYSTEM_AVATAR_URL);
+    });
+
+    it('stands in for a roll with the picture kept for rolls', () => {
+      fixture.componentRef.setInput('chatMessage', dicebotMessage());
+      fixture.detectChanges();
+
+      const avatar = fixture.nativeElement.querySelector('img') as HTMLImageElement | null;
+      expect(avatar?.getAttribute('src')).toBe(DEFAULT_SYSTEM_DICE_AVATAR_URL);
+    });
+
+    it('stands in for a roll that names a picture this seat does not hold', () => {
+      const message = dicebotMessage();
+      message.imageIdentifier = '1d6_dice[00]';
+      fixture.componentRef.setInput('chatMessage', message);
+      fixture.detectChanges();
+
+      const avatar = fixture.nativeElement.querySelector('img') as HTMLImageElement | null;
+      expect(avatar?.getAttribute('src')).toBe(DEFAULT_SYSTEM_DICE_AVATAR_URL);
+    });
+
+    it('serves the picture the room has chosen instead', () => {
+      const image = ImageStorage.instance.add('room-system-chan.png');
+      try {
+        TestBed.inject(SystemAvatarService).setImage('system', image.identifier);
+        fixture.componentRef.setInput('chatMessage', systemMessage());
+        fixture.detectChanges();
+
+        const avatar = fixture.nativeElement.querySelector('img') as HTMLImageElement | null;
+        expect(avatar?.getAttribute('src')).toBe('room-system-chan.png');
+      } finally {
+        TestBed.inject(SystemAvatarService).resetImage('system');
+        ImageStorage.instance.delete(image.identifier);
+      }
+    });
+
+    it('puts whoever rolled in the slot once the room asks for the speaker', () => {
+      const service = TestBed.inject(SystemAvatarService);
+      const image = ImageStorage.instance.add('roller-avatar.png');
+      const cursor = new PeerCursor();
+      cursor.userId = 'roller-user';
+      cursor.imageIdentifier = image.identifier;
+      cursor.initialize();
+      try {
+        service.setSpeakerVisible(true);
+        const message = dicebotMessage();
+        message.originFrom = 'roller-user';
+        fixture.componentRef.setInput('chatMessage', message);
+        fixture.detectChanges();
+
+        expect(component.systemAvatarImage()).toEqual({ kind: 'dice', url: 'roller-avatar.png', isSpeaker: true });
+      } finally {
+        service.setSpeakerVisible(false);
+        cursor.destroy();
+        ImageStorage.instance.delete(image.identifier);
+      }
+    });
+
+    it('puts the character rolled as ahead of the player who owns it', () => {
+      const service = TestBed.inject(SystemAvatarService);
+      const characterImage = ImageStorage.instance.add('character-face.png');
+      const playerImage = ImageStorage.instance.add('player-avatar.png');
+      const cursor = new PeerCursor();
+      cursor.userId = 'roller-user';
+      cursor.imageIdentifier = playerImage.identifier;
+      cursor.initialize();
+      const chatTab = new ChatTab();
+      chatTab.initialize();
+      try {
+        service.setSpeakerVisible(true);
+        const spoken = chatTab.addMessage({
+          from: 'roller-user',
+          name: 'アリス',
+          text: '2d6',
+          imageIdentifier: characterImage.identifier,
+          timestamp: 1000,
+        });
+        const rolled = chatTab.addMessage({
+          from: 'System-BCDice',
+          originFrom: 'roller-user',
+          name: '<BCDice：アリス>',
+          tag: 'system',
+          text: '(2D6) → 7',
+          timestamp: spoken.timestamp + 1,
+        });
+        fixture.componentRef.setInput('chatMessage', rolled);
+        fixture.detectChanges();
+
+        expect(component.systemAvatarImage()?.url).toBe('character-face.png');
+      } finally {
+        service.setSpeakerVisible(false);
+        chatTab.destroy();
+        cursor.destroy();
+        ImageStorage.instance.delete(characterImage.identifier);
+        ImageStorage.instance.delete(playerImage.identifier);
+      }
+    });
+
+    it('stops reading through the tab once it has found the line a roll answers', async () => {
+      const service = TestBed.inject(SystemAvatarService);
+      const characterImage = ImageStorage.instance.add('character-face-2.png');
+      const chatTab = new ChatTab();
+      chatTab.initialize();
+      try {
+        service.setSpeakerVisible(true);
+        const spoken = chatTab.addMessage({
+          from: 'roller-user',
+          name: 'アリス',
+          text: '2d6',
+          imageIdentifier: characterImage.identifier,
+          timestamp: 1000,
+        });
+        const rolled = chatTab.addMessage({
+          from: 'System-BCDice',
+          originFrom: 'roller-user',
+          name: '<BCDice：アリス>',
+          tag: 'system',
+          text: '(2D6) → 7',
+          timestamp: spoken.timestamp + 1,
+        });
+        fixture.componentRef.setInput('chatMessage', rolled);
+        fixture.detectChanges();
+        expect(component.systemAvatarImage()?.url).toBe('character-face-2.png');
+
+        chatTab.addMessage({ from: 'another-user', name: 'ボブ', text: 'こんにちは', timestamp: 2000 });
+        await Promise.resolve();
+        const read = vi.spyOn(chatTab, 'chatMessages', 'get');
+
+        expect(component.systemAvatarImage()?.url).toBe('character-face-2.png');
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        service.setSpeakerVisible(false);
+        chatTab.destroy();
+        ImageStorage.instance.delete(characterImage.identifier);
+      }
+    });
+
+    it('puts whoever asked for a system notice in the slot', () => {
+      const service = TestBed.inject(SystemAvatarService);
+      const image = ImageStorage.instance.add('gm-avatar.png');
+      const cursor = new PeerCursor();
+      cursor.userId = 'gm-user';
+      cursor.imageIdentifier = image.identifier;
+      cursor.initialize();
+      try {
+        service.setSpeakerVisible(true);
+        const message = systemMessage();
+        message.from = 'gm-user';
+        message.tag = 'system-message';
+        fixture.componentRef.setInput('chatMessage', message);
+        fixture.detectChanges();
+
+        expect(component.systemAvatarImage()).toEqual({ kind: 'system', url: 'gm-avatar.png', isSpeaker: true });
+      } finally {
+        service.setSpeakerVisible(false);
+        cursor.destroy();
+        ImageStorage.instance.delete(image.identifier);
+      }
+    });
+
+    it('keeps the mascot when whoever rolled has no picture', () => {
+      const service = TestBed.inject(SystemAvatarService);
+      try {
+        service.setSpeakerVisible(true);
+        fixture.componentRef.setInput('chatMessage', dicebotMessage());
+        fixture.detectChanges();
+
+        expect(component.systemAvatarImage()?.url).toBe(DEFAULT_SYSTEM_DICE_AVATAR_URL);
+      } finally {
+        service.setSpeakerVisible(false);
+      }
+    });
+
+    it('leaves the slot empty once the room picks no picture for it', () => {
+      const service = TestBed.inject(SystemAvatarService);
+      try {
+        service.setImage('system', NO_SYSTEM_AVATAR);
+        fixture.componentRef.setInput('chatMessage', systemMessage());
+        fixture.detectChanges();
+
+        expect(component.systemAvatarImage()).toBeNull();
+        expect(fixture.nativeElement.querySelector('img')).toBeNull();
+      } finally {
+        service.resetImage('system');
+      }
+    });
+
+    it('leaves the picture out once the room hides it', () => {
+      const service = TestBed.inject(SystemAvatarService);
+      try {
+        service.setVisible(false);
+        fixture.componentRef.setInput('chatMessage', systemMessage());
+        fixture.detectChanges();
+
+        expect(component.systemAvatarImage()).toBeNull();
+        expect(fixture.nativeElement.querySelector('img')).toBeNull();
+      } finally {
+        service.setVisible(true);
+      }
+    });
   });
 
   describe('escapeHtmlAndRuby', () => {
@@ -154,6 +503,11 @@ describe('ChatMessageComponent', () => {
   });
 
   describe('clickShareAsMemo', () => {
+    function memoIcon(): Element | null {
+      const icons = [...(fixture.nativeElement as HTMLElement).querySelectorAll('i.material-icons')];
+      return icons.find((icon) => icon.textContent?.trim() === 'sticky_note_2') ?? null;
+    }
+
     it('turns a line into a note and puts it in the store', () => {
       const message = new ChatMessage();
       message.initialize();
@@ -161,6 +515,9 @@ describe('ChatMessageComponent', () => {
       message.name = '勇者';
       message.text = '世界を救うのだ';
       fixture.componentRef.setInput('chatMessage', message);
+
+      fixture.detectChanges();
+      expect(memoIcon()).not.toBeNull();
 
       const beforeNotes = ObjectStore.instance.getObjects(TextNote);
       try {
@@ -174,6 +531,46 @@ describe('ChatMessageComponent', () => {
         const created = ObjectStore.instance.getObjects(TextNote).find((n) => !beforeNotes.includes(n));
         created?.destroy();
       }
+    });
+
+    it('lays a note shared from chat flat in 2D mode', () => {
+      const message = new ChatMessage();
+      message.initialize();
+      message.from = 'tester';
+      message.name = '勇者';
+      message.text = '地図に置くメモ';
+      fixture.componentRef.setInput('chatMessage', message);
+      const tabletop = TestBed.inject(TabletopService);
+      tabletop.currentTable.mode2d = true;
+      const beforeNotes = ObjectStore.instance.getObjects(TextNote);
+
+      try {
+        component.clickShareAsMemo();
+        const created = ObjectStore.instance.getObjects(TextNote).find((note) => !beforeNotes.includes(note));
+        expect(created?.isUpright).toBe(false);
+      } finally {
+        tabletop.currentTable.mode2d = false;
+        const created = ObjectStore.instance.getObjects(TextNote).find((note) => !beforeNotes.includes(note));
+        created?.destroy();
+      }
+    });
+
+    it('offers nothing to a guest, who is at the table to watch', () => {
+      const message = new ChatMessage();
+      message.initialize();
+      message.from = 'tester';
+      message.name = '勇者';
+      message.text = '世界を救うのだ';
+      fixture.componentRef.setInput('chatMessage', message);
+      vi.spyOn(TestBed.inject(RolePermissionService), 'canEditTabletop', 'get').mockReturnValue(false);
+      fixture.detectChanges();
+
+      const before = ObjectStore.instance.getObjects(TextNote).length;
+      component.clickShareAsMemo();
+
+      expect(component.canShareAsMemo).toBe(false);
+      expect(ObjectStore.instance.getObjects(TextNote).length).toBe(before);
+      expect(memoIcon()).toBeNull();
     });
 
     it('does nothing for a line of nothing but spaces', () => {
@@ -258,6 +655,531 @@ describe('ChatMessageComponent', () => {
     });
   });
 
+  describe('the menu of what can be done with a line', () => {
+    let open: MockInstance<ContextMenuService['open']>;
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const strays: Element[] = [];
+
+    beforeEach(() => {
+      open = vi.spyOn(TestBed.inject(ContextMenuService), 'open').mockImplementation(() => undefined);
+      vi.spyOn(TestBed.inject(PointerDeviceService), 'isAllowedToOpenContextMenu', 'get').mockReturnValue(true);
+      vi.spyOn(TestBed.inject(ViewportService), 'isTouch').mockReturnValue(false);
+    });
+
+    afterEach(() => {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+      window.getSelection()?.removeAllRanges();
+      strays.splice(0).forEach((stray) => stray.remove());
+    });
+
+    function wordsIn(element: Element, words: string): Text {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data.includes(words)) return node as Text;
+      }
+      throw new Error(`"${words}" is not drawn`);
+    }
+
+    function outsideTheLine(words: string): Text {
+      const paragraph = document.createElement('p');
+      paragraph.textContent = words;
+      (fixture.nativeElement as Element).before(paragraph);
+      strays.push(paragraph);
+      return paragraph.firstChild as Text;
+    }
+
+    function pickOut(start: Text, startOffset: number, end: Text, endOffset: number): void {
+      const range = document.createRange();
+      range.setStart(start, startOffset);
+      range.setEnd(end, endOffset);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    function said(text: string): ChatMessage {
+      const message = new ChatMessage();
+      message.initialize();
+      message.from = 'someone-else';
+      message.to = '';
+      message.name = 'テスト';
+      message.tag = '';
+      message.imageIdentifier = '';
+      message.messColor = '#000000';
+      message.text = text;
+      fixture.componentRef.setInput('chatMessage', message);
+      fixture.detectChanges();
+      return message;
+    }
+
+    function pressOn(target: Element): MouseEvent {
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event;
+    }
+
+    function offered(): ContextMenuAction[] {
+      return open.mock.calls[0][1];
+    }
+
+    it('opens on a right click or a press held on the line, with what its buttons offer', () => {
+      const t = TestBed.inject(TRANSLATE_FN);
+      said('こんにちは');
+
+      const event = pressOn(fixture.nativeElement.querySelector('.msg-text'));
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(offered().map((action) => action.name)).toEqual(
+        expect.arrayContaining([
+          t('feature.chat.message.reply'),
+          t('feature.chat.message.quote'),
+          t('feature.chat.message.copyText'),
+        ])
+      );
+    });
+
+    it("leaves a link the browser's own menu", () => {
+      said('https://example.com');
+      const link = fixture.nativeElement.querySelector('.msg-text a') as Element | null;
+
+      expect(link).not.toBeNull();
+      pressOn(link!);
+
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('offers nothing in a window that only reads the log', () => {
+      fixture.componentRef.setInput('readOnly', true);
+      said('こんにちは');
+
+      pressOn(fixture.nativeElement.querySelector('.msg-text'));
+
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('copies the words of the line as the reader is shown them', () => {
+      const t = TestBed.inject(TRANSLATE_FN);
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      said('こんにちは');
+
+      pressOn(fixture.nativeElement.querySelector('.msg-text'));
+      offered()
+        .find((action) => action.name === t('feature.chat.message.copyText'))
+        ?.action?.();
+
+      expect(writeText).toHaveBeenCalledWith('こんにちは');
+    });
+
+    it("leaves the browser's own menu to a right click with words in the line picked out", () => {
+      said('こんにちは、みなさん');
+      const body = fixture.nativeElement.querySelector('.msg-text') as Element;
+      const words = wordsIn(body, 'みなさん');
+      pickOut(words, words.data.indexOf('みなさん'), words, words.data.length);
+
+      const event = pressOn(body);
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it("leaves the browser's own menu when the words picked out run on into the line", () => {
+      said('こんにちは、みなさん');
+      const body = fixture.nativeElement.querySelector('.msg-text') as Element;
+      const before = outsideTheLine('前の話');
+      const words = wordsIn(body, 'こんにちは');
+      pickOut(before, 1, words, words.data.indexOf('、'));
+
+      const event = pressOn(body);
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('still opens over a line when the words picked out lie elsewhere on the page', () => {
+      said('こんにちは');
+      const elsewhere = outsideTheLine('前の話');
+      pickOut(elsewhere, 0, elsewhere, 2);
+
+      const event = pressOn(fixture.nativeElement.querySelector('.msg-text'));
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('copies only the words picked out in the line when a press held on a touch screen opens the menu', () => {
+      const t = TestBed.inject(TRANSLATE_FN);
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      vi.spyOn(TestBed.inject(ViewportService), 'isTouch').mockReturnValue(true);
+      said('こんにちは、みなさん');
+      const body = fixture.nativeElement.querySelector('.msg-text') as Element;
+      const words = wordsIn(body, 'みなさん');
+      pickOut(words, words.data.indexOf('みなさん'), words, words.data.length);
+
+      pressOn(body);
+      offered()
+        .find((action) => action.name === t('feature.chat.message.copyText'))
+        ?.action?.();
+
+      expect(writeText).toHaveBeenCalledWith('みなさん');
+    });
+
+    describe('copying the words', () => {
+      function copied(): MockInstance<(text: string) => Promise<void>> {
+        const t = TestBed.inject(TRANSLATE_FN);
+        const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+        pressOn(fixture.nativeElement.querySelector('.msg-text'));
+        offered()
+          .find((action) => action.name === t('feature.chat.message.copyText'))
+          ?.action?.();
+        return writeText;
+      }
+
+      it('copies a notice from the room in the words the reader is shown, not the key it is kept as', () => {
+        const t = TestBed.inject(TRANSLATE_FN);
+        const message = said(encodeI18nMessage('feature.lobby.errors.generic', { errorType: 'timeout' }));
+        message.from = 'System';
+        fixture.detectChanges();
+
+        expect(copied()).toHaveBeenCalledWith(t('feature.lobby.errors.generic', { errorType: 'timeout' }));
+      });
+
+      it('copies ruby as the words with their reading after them, and an escaped space as a space', () => {
+        said('前｜漢字《かんじ》後\\sです');
+
+        expect(copied()).toHaveBeenCalledWith('前漢字（かんじ）後 です');
+      });
+    });
+
+    describe('over a picture on the line', () => {
+      const images: string[] = [];
+
+      afterEach(() => {
+        images.splice(0).forEach((identifier) => ImageStorage.instance.delete(identifier));
+      });
+
+      function saidWithPictures(): void {
+        const portrait = ImageStorage.instance.add('speaker-portrait.png');
+        const attached = ImageStorage.instance.add('attached-picture.png');
+        images.push(portrait.identifier, attached.identifier);
+        const message = said('見て');
+        message.imageIdentifier = portrait.identifier;
+        message.attachmentImageIdentifiers = JSON.stringify([attached.identifier]);
+        TestBed.inject(ObjectChangeService).notifyChanged(message.identifier);
+        fixture.detectChanges();
+      }
+
+      function attachedPicture(): Element {
+        return fixture.nativeElement.querySelector('.message-attachment-image');
+      }
+
+      function portrait(): Element {
+        return fixture.nativeElement.querySelector('img[src="speaker-portrait.png"]');
+      }
+
+      it("leaves the browser's own menu to a right click on a picture attached to the line", () => {
+        saidWithPictures();
+
+        const event = pressOn(attachedPicture());
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(open).not.toHaveBeenCalled();
+      });
+
+      it("leaves the browser's own menu to a press held on an attached picture on a touch screen", () => {
+        vi.spyOn(TestBed.inject(ViewportService), 'isTouch').mockReturnValue(true);
+        saidWithPictures();
+
+        const event = pressOn(attachedPicture());
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(open).not.toHaveBeenCalled();
+      });
+
+      it("leaves the browser's own menu to a right click on the speaker's portrait", () => {
+        saidWithPictures();
+
+        const event = pressOn(portrait());
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(open).not.toHaveBeenCalled();
+      });
+
+      it("still opens the line's menu from a press held on the speaker's portrait on a touch screen", () => {
+        vi.spyOn(TestBed.inject(ViewportService), 'isTouch').mockReturnValue(true);
+        saidWithPictures();
+
+        const event = pressOn(portrait());
+
+        expect(event.defaultPrevented).toBe(true);
+        expect(open).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('picking out the words of a line on a touch screen', () => {
+      async function pickingOut(): Promise<Element> {
+        const t = TestBed.inject(TRANSLATE_FN);
+        vi.spyOn(TestBed.inject(ViewportService), 'isTouch').mockReturnValue(true);
+        said('こんにちは、みなさん');
+        const body = fixture.nativeElement.querySelector('.msg-text') as Element;
+        pressOn(body);
+        offered()
+          .find((action) => action.name === t('feature.chat.message.selectText'))
+          ?.action?.();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        open.mockClear();
+        return body;
+      }
+
+      function isSelectable(body: Element): boolean {
+        fixture.detectChanges();
+        return body.classList.contains('select-text!');
+      }
+
+      it('is offered from the menu of a line on a touch screen', () => {
+        const t = TestBed.inject(TRANSLATE_FN);
+        vi.spyOn(TestBed.inject(ViewportService), 'isTouch').mockReturnValue(true);
+        said('こんにちは');
+
+        pressOn(fixture.nativeElement.querySelector('.msg-text'));
+
+        expect(offered().map((action) => action.name)).toContain(t('feature.chat.message.selectText'));
+      });
+
+      it('lets the words of that line be picked out, and picks them all out', async () => {
+        const body = await pickingOut();
+
+        expect(isSelectable(body)).toBe(true);
+        expect(window.getSelection()?.toString()).toBe('こんにちは、みなさん');
+      });
+
+      it('opens no menu over the words while they are being picked out', async () => {
+        const body = await pickingOut();
+
+        const event = pressOn(body);
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(open).not.toHaveBeenCalled();
+      });
+
+      it('ends once the words are let go, and the menu opens again', async () => {
+        const body = await pickingOut();
+
+        window.getSelection()?.removeAllRanges();
+
+        expect(isSelectable(body)).toBe(false);
+        pressOn(body);
+        expect(open).toHaveBeenCalledTimes(1);
+      });
+
+      it('ends once the words picked out move off the line', async () => {
+        const body = await pickingOut();
+        const elsewhere = outsideTheLine('前の話');
+
+        pickOut(elsewhere, 0, elsewhere, 2);
+
+        expect(isSelectable(body)).toBe(false);
+      });
+
+      it('ends on a tap somewhere else, letting the words go', async () => {
+        const body = await pickingOut();
+        const elsewhere = outsideTheLine('前の話');
+
+        elsewhere.parentElement!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+
+        expect(isSelectable(body)).toBe(false);
+        expect(window.getSelection()?.toString()).toBe('');
+      });
+
+      it('carries on through a tap on the line itself', async () => {
+        const body = await pickingOut();
+
+        body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+
+        expect(isSelectable(body)).toBe(true);
+      });
+    });
+  });
+
+  describe('the ticker action', () => {
+    it('stays off a screen that is not running a ticker', () => {
+      const message = new ChatMessage('ticker-action-off');
+      message.initialize();
+      message.from = 'tester';
+      message.name = 'GM';
+      message.text = '扉が開いた';
+      fixture.componentRef.setInput('chatMessage', message);
+
+      fixture.detectChanges();
+
+      expect(component.canShowInTicker()).toBe(false);
+      expect(fixture.nativeElement.querySelector('[data-testid="chat-message-ticker"]')).toBeNull();
+      message.destroy();
+    });
+
+    it('shows after the other actions and broadcasts an ordinary public message', () => {
+      const message = new ChatMessage('ticker-action-message');
+      message.initialize();
+      message.from = 'tester';
+      message.name = 'GM';
+      message.text = '扉が開いた';
+      fixture.componentRef.setInput('chatMessage', message);
+      const tickerSelection = TestBed.inject(ChatTickerSelectionService);
+      const spy = vi.spyOn(tickerSelection, 'showMessage');
+      // The band runs along the edge of a table looked straight down on, and nowhere else.
+      TestBed.inject(ViewModePreferenceService).choose('flat');
+      TestBed.inject(TabletopDisplayService).set({ multiAngleTickerEnabled: true });
+
+      fixture.detectChanges();
+      const action = fixture.nativeElement.querySelector('[data-testid="chat-message-ticker"]') as HTMLElement | null;
+
+      expect(component.canShowInTicker()).toBe(true);
+      expect(action?.title).toBe('ティッカー');
+      expect(action?.textContent?.trim()).toBe('campaign');
+      expect(Array.from(action?.parentElement?.querySelectorAll('.material-icons') ?? []).at(-1)).toBe(action);
+      action?.click();
+      expect(spy).toHaveBeenCalledWith(message.identifier);
+    });
+
+    it.each([
+      { label: 'a direct message', to: 'other-user', tag: '', text: '秘密会話' },
+      { label: 'a secret message', to: '', tag: 'secret', text: '秘匿情報' },
+      { label: 'a system message', to: '', tag: 'system', text: 'システム通知' },
+      { label: 'an empty message', to: '', tag: '', text: '   \n  ' },
+    ])('does not offer $label to the public ticker', ({ to, tag, text }) => {
+      const message = new ChatMessage();
+      message.initialize();
+      message.from = 'tester';
+      message.to = to;
+      message.tag = tag;
+      message.text = text;
+      fixture.componentRef.setInput('chatMessage', message);
+
+      fixture.detectChanges();
+
+      expect(component.canShowInTicker()).toBe(false);
+      expect(fixture.nativeElement.querySelector('[data-testid="chat-message-ticker"]')).toBeNull();
+    });
+  });
+
+  describe('saying a line again in another tab', () => {
+    const tabs: ChatTab[] = [];
+
+    function makeTab(name: string): ChatTab {
+      const tab = new ChatTab();
+      tab.name = name;
+      tab.initialize();
+      const kept = ChatTabList.instance.appendChild(tab)!;
+      tabs.push(kept);
+      return kept;
+    }
+
+    function copyIcon(): Element | null {
+      const icons = [...(fixture.nativeElement as HTMLElement).querySelectorAll('i.material-icons')];
+      return icons.find((icon) => icon.textContent?.trim() === 'move_to_inbox') ?? null;
+    }
+
+    function spoken(tab: ChatTab): ChatMessage {
+      const message = tab.addMessage({
+        from: 'test-user',
+        name: 'アリス',
+        text: 'こんばんは',
+        timestamp: 1000,
+        messColor: '#123456',
+      });
+      fixture.componentRef.setInput('chatMessage', message);
+      fixture.detectChanges();
+      return message;
+    }
+
+    beforeEach(() => {
+      PeerCursor.createMyCursor();
+    });
+
+    afterEach(() => {
+      for (const tab of tabs.splice(0)) tab.destroy();
+      (ChatTabList as unknown as { _instance: ChatTabList | undefined })._instance = undefined;
+    });
+
+    it('offers the tabs the reader may speak in, and not the one the line is already in', () => {
+      const here = makeTab('メイン');
+      makeTab('雑談');
+      spoken(here);
+
+      expect(component.copyTargets().map((tab) => tab.name)).toEqual(['雑談']);
+      expect(copyIcon()).not.toBeNull();
+    });
+
+    it('offers nothing where there is nowhere else to say it', () => {
+      const here = makeTab('メイン');
+      spoken(here);
+
+      expect(component.canCopyToTab).toBe(false);
+      expect(copyIcon()).toBeNull();
+    });
+
+    it('does not offer to carry a line meant for one person', () => {
+      const here = makeTab('メイン');
+      makeTab('雑談');
+      const whisper = here.addMessage({
+        from: 'test-user',
+        to: 'someone',
+        name: 'アリス',
+        text: 'ここだけの話',
+        timestamp: 1000,
+      });
+      fixture.componentRef.setInput('chatMessage', whisper);
+      fixture.detectChanges();
+
+      expect(component.canCopyToTab).toBe(false);
+      expect(copyIcon()).toBeNull();
+    });
+
+    it('says the line again in the chosen tab, as it was said here', () => {
+      const here = makeTab('メイン');
+      const there = makeTab('雑談');
+      const message = spoken(here);
+
+      component.copyToTab(there);
+
+      const copied = there.chatMessages.at(-1)!;
+      expect(copied.identifier).not.toBe(message.identifier);
+      expect(copied.text).toBe('こんばんは');
+      expect(copied.name).toBe('アリス');
+      expect(copied.messColor).toBe('#123456');
+      expect(copied.timestamp).toBeGreaterThanOrEqual(message.timestamp);
+      expect(here.chatMessages).toHaveLength(1);
+    });
+
+    it('closes the list once a tab is chosen', () => {
+      const here = makeTab('メイン');
+      const there = makeTab('雑談');
+      spoken(here);
+
+      component.toggleCopyPicker();
+      expect(component.isCopyPickerOpen()).toBe(true);
+
+      component.copyToTab(there);
+      expect(component.isCopyPickerOpen()).toBe(false);
+    });
+
+    it('copies nothing into a tab the reader may not speak in', () => {
+      const here = makeTab('メイン');
+      const there = makeTab('雑談');
+      there.plCanSpeak = false;
+      PeerCursor.myCursor.role = PeerRole.Player;
+      spoken(here);
+
+      component.copyToTab(there);
+
+      expect(there.chatMessages).toHaveLength(0);
+    });
+  });
+
   describe('what can be acted on, and the guards on replying and quoting', () => {
     it('replies to nothing on a system message', () => {
       const message = new ChatMessage();
@@ -323,6 +1245,93 @@ describe('ChatMessageComponent', () => {
 
       const req = ui.chatJumpRequest();
       expect(req?.messageIdentifier).toBe('msg-B');
+    });
+  });
+  describe('the novel-mode staging', () => {
+    const spoken = (text: string, vnEmote = '') => {
+      const message = new ChatMessage();
+      message.initialize();
+      // What `changeable` compares against, so an edit is allowed whatever ran before this.
+      message.from = beMyself().userId;
+      message.to = '';
+      message.name = 'アリス';
+      message.tag = '';
+      message.imageIdentifier = '';
+      message.messColor = '#000000';
+      message.text = text;
+      if (vnEmote) message.vnEmote = vnEmote;
+      return message;
+    };
+
+    it('leaves the body alone when the staging is kept beside the line', () => {
+      fixture.componentRef.setInput('chatMessage', spoken('なんだって！？', 'shape:shout bubble:shake'));
+      expect(component.escapeHtmlAndRuby('なんだって！？')).toContain('なんだって！？');
+      expect(component.escapeHtmlAndRuby('なんだって！？')).not.toContain('〔');
+    });
+
+    it('takes the staging off a line said before it was kept apart', () => {
+      fixture.componentRef.setInput('chatMessage', spoken('なんだって！？ 〔叫び・ゆれ〕'));
+      const drawn = component.escapeHtmlAndRuby('なんだって！？ 〔叫び・ゆれ〕');
+      expect(drawn).toContain('なんだって！？');
+      expect(drawn).not.toContain('叫び');
+    });
+
+    it('leaves a bracket it cannot read alone', () => {
+      fixture.componentRef.setInput('chatMessage', spoken('メモ 〔重要〕'));
+      expect(component.escapeHtmlAndRuby('メモ 〔重要〕')).toContain('重要');
+    });
+
+    it('offers the body alone for editing', () => {
+      const message = spoken('なんだって！？ 〔叫び〕');
+      fixture.componentRef.setInput('chatMessage', message);
+      component.startEdit();
+      expect(component.editDraft()).toBe('なんだって！？');
+    });
+
+    it('moves an older line staging beside it when the body is edited', () => {
+      const message = spoken('なんだって！？ 〔叫び・ゆれ〕');
+      fixture.componentRef.setInput('chatMessage', message);
+      component.startEdit();
+      component.editDraft.set('やっぱりなんでもない');
+      component.saveEdit();
+
+      expect(message.text).toBe('やっぱりなんでもない');
+      expect(message.vnEmote).toBe('shape:shout bubble:shake');
+    });
+
+    it('says nothing about the staging unless the reader asked', () => {
+      TestBed.inject(ChatPreferencesService).setShowVnEmoteBadge(false);
+      fixture.componentRef.setInput('chatMessage', spoken('なんだって！？', 'shape:shout bubble:shake'));
+      expect(component.emoteBadges()).toEqual([]);
+    });
+
+    it('names the staging once the reader asks for it', () => {
+      TestBed.inject(ChatPreferencesService).setShowVnEmoteBadge(true);
+      fixture.componentRef.setInput('chatMessage', spoken('なんだって！？', 'shape:shout bubble:shake'));
+      expect(component.emoteBadges()).toHaveLength(2);
+    });
+
+    it('names the staging of a line said before it was kept apart', () => {
+      TestBed.inject(ChatPreferencesService).setShowVnEmoteBadge(true);
+      fixture.componentRef.setInput('chatMessage', spoken('またね 〔退場〕'));
+      expect(component.emoteBadges()).toHaveLength(1);
+    });
+
+    it('says nothing about a line staged no particular way', () => {
+      TestBed.inject(ChatPreferencesService).setShowVnEmoteBadge(true);
+      fixture.componentRef.setInput('chatMessage', spoken('こんばんは'));
+      expect(component.emoteBadges()).toEqual([]);
+    });
+
+    it('does not invent a staging for a line that never had one', () => {
+      const message = spoken('こんばんは');
+      fixture.componentRef.setInput('chatMessage', message);
+      component.startEdit();
+      component.editDraft.set('こんにちは');
+      component.saveEdit();
+
+      expect(message.text).toBe('こんにちは');
+      expect(message.vnEmote).toBe('');
     });
   });
 });

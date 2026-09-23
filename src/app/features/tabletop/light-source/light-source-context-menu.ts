@@ -1,6 +1,15 @@
 import { TranslateFn } from '@axe/application/i18n/translate.token';
-import { ContextMenuAction, ContextMenuSeparator } from '@axe/application/ui/context-menu.service';
-import { buildAltitudeAction, buildLockToggleAction } from '@axe/application/ui/tabletop-context-menu-actions';
+import {
+  ContextMenuAction,
+  ContextMenuRadialGroup,
+  ContextMenuSeparator,
+} from '@axe/application/ui/context-menu.service';
+import {
+  buildAltitudeAction,
+  buildCopyAction,
+  buildLockToggleAction,
+} from '@axe/application/ui/tabletop-context-menu-actions';
+import { LIGHT_SKIN_IDS, LightSkinId } from '@axe/domain/media/light-skins';
 import { PresetSound, SoundEffect } from '@axe/domain/media/sound-effect';
 import { LightSource } from '@axe/domain/tabletop/light-source';
 import { applyLightPreset, LightPreset } from '@axe/domain/tabletop/vision-types';
@@ -14,23 +23,68 @@ const PRESET_LABEL_KEYS: Record<LightPreset, string> = {
   [LightPreset.FLASHLIGHT]: 'feature.light.preset.flashlight',
   [LightPreset.NEON]: 'feature.light.preset.neon',
   [LightPreset.SPOTLIGHT]: 'feature.light.preset.spotlight',
+  [LightPreset.CAMPFIRE]: 'feature.light.preset.campfire',
+  [LightPreset.SCONCE]: 'feature.light.preset.sconce',
+  [LightPreset.BRAZIER]: 'feature.light.preset.brazier',
+  [LightPreset.CHANDELIER]: 'feature.light.preset.chandelier',
 };
 
+export interface LightSourceContextMenuModel {
+  actions: ContextMenuAction[];
+  radialGroups: ContextMenuRadialGroup[];
+}
+
+/**
+ * The flat list of entries for a light's context menu, as `buildLightSourceContextMenuModel` builds
+ * them, without the radial grouping.
+ */
 export function buildLightSourceContextMenu(
   light: LightSource,
   gridSize: number,
   characters: readonly { identifier: string; name: string }[],
   onEdit: (light: LightSource) => void,
-  t: TranslateFn
+  t: TranslateFn,
+  onSkin?: (skin: LightSkinId | 'library' | 'none') => void
 ): ContextMenuAction[] {
-  const menu: ContextMenuAction[] = [];
+  return buildLightSourceContextMenuModel(light, gridSize, characters, onEdit, t, onSkin).actions;
+}
 
-  menu.push({
+/**
+ * Builds a light's context menu, both as a flat list and grouped for the radial menu.
+ *
+ * The entries act on the light directly: following a character, switching it on or off, applying a
+ * preset (which also switches it on), altitude, lock, copy and delete. Settings go through
+ * `onEdit`, and the skin entry is offered only when `onSkin` is given. The follow list ticks the
+ * character the light follows.
+ */
+export function buildLightSourceContextMenuModel(
+  light: LightSource,
+  gridSize: number,
+  characters: readonly { identifier: string; name: string }[],
+  onEdit: (light: LightSource) => void,
+  t: TranslateFn,
+  onSkin?: (skin: LightSkinId | 'library' | 'none') => void
+): LightSourceContextMenuModel {
+  const settingsAction: ContextMenuAction = {
     name: t('feature.light.contextMenu.settings'),
     action: () => onEdit(light),
-  });
-
-  menu.push({
+  };
+  const skinAction: ContextMenuAction | null = onSkin
+    ? {
+        name: t('feature.light.contextMenu.skin'),
+        action: undefined,
+        subActions: [
+          ...LIGHT_SKIN_IDS.map((id) => ({
+            name: t('feature.light.skin.' + id),
+            action: () => onSkin(id),
+          })),
+          ContextMenuSeparator,
+          { name: t('feature.light.contextMenu.skinFromLibrary'), action: () => onSkin('library') },
+          { name: t('feature.light.contextMenu.skinNone'), action: () => onSkin('none') },
+        ],
+      }
+    : null;
+  const followAction: ContextMenuAction = {
     name: t('feature.light.contextMenu.follow'),
     action: undefined,
     subActions: [
@@ -50,17 +104,15 @@ export function buildLightSourceContextMenu(
         },
       })),
     ],
-  });
-
-  menu.push({
+  };
+  const toggleAction: ContextMenuAction = {
     name: light.lightEnabled ? t('feature.light.contextMenu.turnOff') : t('feature.light.contextMenu.turnOn'),
     action: () => {
       light.lightEnabled = !light.lightEnabled;
       SoundEffect.play(PresetSound.sweep);
     },
-  });
-
-  menu.push({
+  };
+  const presetAction: ContextMenuAction = {
     name: t('feature.light.contextMenu.preset'),
     action: undefined,
     subActions: Object.values(LightPreset).map((preset) => ({
@@ -71,30 +123,53 @@ export function buildLightSourceContextMenu(
         SoundEffect.play(PresetSound.sweep);
       },
     })),
+  };
+  const altitudeAction = buildAltitudeAction(light, t);
+  const lockAction = buildLockToggleAction(light.isLock, (next) => (light.isLock = next), t);
+  const copyAction = buildCopyAction(light, gridSize, t, {
+    sound: PresetSound.cardPut,
+    afterClone: (clone) => (clone.isLock = false),
   });
-
-  menu.push(buildAltitudeAction(light, t));
-
-  menu.push(buildLockToggleAction(light.isLock, (next) => (light.isLock = next), t));
-
-  menu.push(ContextMenuSeparator);
-  menu.push({
-    name: t('feature.tabletop.contextMenu.copy'),
-    action: () => {
-      const clone = light.clone();
-      clone.location.x += gridSize;
-      clone.location.y += gridSize;
-      clone.isLock = false;
-      SoundEffect.play(PresetSound.cardPut);
-    },
-  });
-  menu.push({
+  const deleteAction: ContextMenuAction = {
     name: t('feature.tabletop.contextMenu.delete'),
     action: () => {
       light.destroy();
       SoundEffect.play(PresetSound.sweep);
     },
-  });
+  };
 
-  return menu;
+  const appearanceActions = [settingsAction, ...(skinAction ? [skinAction] : []), toggleAction, presetAction];
+  const positionActions = [followAction, altitudeAction];
+  const objectActions = [lockAction, copyAction, deleteAction];
+  return {
+    actions: [
+      settingsAction,
+      ...(skinAction ? [skinAction] : []),
+      followAction,
+      toggleAction,
+      presetAction,
+      altitudeAction,
+      lockAction,
+      ContextMenuSeparator,
+      copyAction,
+      deleteAction,
+    ],
+    radialGroups: [
+      {
+        name: t('feature.light.contextMenu.radialAppearance'),
+        icon: 'lightbulb',
+        actions: appearanceActions,
+      },
+      {
+        name: t('feature.light.contextMenu.radialPosition'),
+        icon: 'my_location',
+        actions: positionActions,
+      },
+      {
+        name: t('feature.light.contextMenu.radialObject'),
+        icon: 'settings',
+        actions: objectActions,
+      },
+    ],
+  };
 }

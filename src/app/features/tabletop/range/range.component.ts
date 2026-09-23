@@ -12,6 +12,8 @@ import {
   viewChild,
 } from '@angular/core';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { CoordinateService } from '@axe/application/input/coordinate.service';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { GameObjectInventoryService } from '@axe/application/inventory/game-object-inventory.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
@@ -22,17 +24,18 @@ import { PieceContextMenuService } from '@axe/application/ui/piece-context-menu.
 import { sheetPanelBox } from '@axe/application/ui/sheet-panel';
 import { sheetPanelTitle } from '@axe/application/ui/sheet-panel';
 import { UiSignalService } from '@axe/application/ui/ui-signal.service';
-import { CoordinateService } from '@axe/core/input/coordinate.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { PERF_RANGE_RENDER, perfCounters } from '@axe/core/util/perf-counters';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { PresetSound, SoundEffect } from '@axe/domain/media/sound-effect';
 import { cellPatternBoundingBox, parseCellPattern } from '@axe/domain/tabletop/cell-pattern';
 import { GameTable } from '@axe/domain/tabletop/game-table';
 import { isHexGrid } from '@axe/domain/tabletop/hex-geometry';
+import { multiAngleFontScaleFactor } from '@axe/domain/tabletop/multi-angle-font-scale';
 import { RangeArea } from '@axe/domain/tabletop/range';
 import { TableSelecter } from '@axe/domain/tabletop/table-selecter';
-import { buildRangeContextMenu } from '@axe/features/tabletop/range/range-context-menu';
+import { ObjectPanelService } from '@axe/features/panels/object-panel.service';
+import { buildRangeContextMenuModel } from '@axe/features/tabletop/range/range-context-menu';
 import {
   ClipAreaCorn,
   ClipAreaHexagon,
@@ -70,6 +73,7 @@ export class RangeComponent {
   private readonly pieceContextMenu = inject(PieceContextMenuService);
   private readonly elementRef = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly panelService = inject(PanelService);
+  private readonly objectPanels = inject(ObjectPanelService);
   private readonly pointerDeviceService = inject(PointerDeviceService);
   private readonly coordinateService = inject(CoordinateService);
   protected readonly tabletopService = inject(TabletopService);
@@ -192,9 +196,11 @@ export class RangeComponent {
     clip06y: -50,
   };
 
+  /** The room's table selector, which knows which table is being viewed. */
   get tableSelecter(): TableSelecter {
     return this.tabletopService.tableSelecter;
   }
+  /** The table being viewed, whose grid type the range lines its cells up with. */
   get currentTable(): GameTable {
     return this.tabletopService.currentTable;
   }
@@ -290,13 +296,14 @@ export class RangeComponent {
 
   private readonly _clipVersion = signal(0);
 
+  /** The table's grid cell size in pixels, which the range's length, width and altitude are measured in. */
   get gridSize(): number {
     return this.tabletopService.gridSize();
   }
   math = Math;
 
   viewRotateX = 50;
-  readonly viewRotateZ = computed(() => this.uiSignalService.tableViewRotation()?.z ?? 10);
+  readonly viewRotateZ = this.uiSignalService.tableViewRotationZ;
 
   readonly movableOption = signal<MovableOption>({});
   readonly rotableOption = signal<RotableOption>({});
@@ -345,15 +352,23 @@ export class RangeComponent {
     return this.inputRef.current;
   }
 
+  /** Stops the browser's own drag of the range's element, so only the table's drag moves it. */
   onDragstart(e: DragEvent) {
     e.stopPropagation();
     e.preventDefault();
   }
 
+  /** Lets go of a press that starts on the range, so it does not hold on to the pointer. */
   onInputStart(_e: MouseEvent | TouchEvent) {
     this.input?.cancel();
   }
 
+  /**
+   * Opens the range's right-click menu at the pointer.
+   *
+   * On a 2D table set to a radial menu style it opens as a radial menu. When several pieces are
+   * selected, the menu for the selection opens instead.
+   */
   onContextMenu(e: Event) {
     e.stopPropagation();
     e.preventDefault();
@@ -362,7 +377,7 @@ export class RangeComponent {
     const menuPosition = this.pointerDeviceService.pointers[0];
     if (this.pieceContextMenu.openForSelection(this.range(), this.gridSize, menuPosition)) return;
     const objectPosition = this.coordinateService.calcTabletopLocalCoordinate();
-    const menuArray = buildRangeContextMenu(
+    const menu = buildRangeContextMenuModel(
       this.range()!,
       this.gridSize,
       objectPosition,
@@ -374,9 +389,23 @@ export class RangeComponent {
       this.translateFn,
       (r) => this.openCellEditor(r)
     );
-    this.contextMenuService.open(menuPosition, menuArray, this.name());
+    const display = this.tabletopService.display();
+    if (this.tabletopService.mode2d() && display.tabletopMenuStyle !== 'standard') {
+      this.contextMenuService.openRadial(
+        menuPosition,
+        menu.actions,
+        menu.radialGroups,
+        this.name(),
+        display.tabletopMenuStyle === 'radial',
+        display.radialMenuRotationSpeed,
+        multiAngleFontScaleFactor(display.multiAngleFontScale)
+      );
+      return;
+    }
+    this.contextMenuService.open(menuPosition, menu.actions, this.name());
   }
 
+  /** Opens the panel for choosing a character for the range to follow, from the follow menu entry. */
   dockingWindowOpen() {
     const coordinate = this.pointerDeviceService.pointers[0];
     const option: PanelOption = {
@@ -390,14 +419,17 @@ export class RangeComponent {
     component.tabletopObject = this.range();
   }
 
+  /** Plays the pick-up sound when a drag or a turn of the range begins. */
   onMove() {
     SoundEffect.play(PresetSound.cardPick);
   }
 
+  /** Plays the put-down sound when a drag or a turn of the range ends. */
   onMoved() {
     SoundEffect.play(PresetSound.cardPut);
   }
 
+  /** Redraws the range at the angle it is being turned to, while the rotate grip is dragged. */
   onRotateChanged(degree: number) {
     this.setRange(degree);
   }
@@ -445,20 +477,8 @@ export class RangeComponent {
   }
 
   private showDetail(gameObject: RangeArea) {
-    const coordinate = this.pointerDeviceService.pointers[0];
     const title = sheetPanelTitle(this.translateFn('feature.tabletop.panel.range'), gameObject.name);
-    const option: PanelOption = {
-      title: title,
-      ...sheetPanelBox(coordinate, 400, 300),
-    };
-    this.panelService.openLazy(
-      () =>
-        import('@axe/features/character/game-character-sheet/game-character-sheet.component').then(
-          (m) => m.GameCharacterSheetComponent
-        ),
-      option,
-      (component) => (component.tabletopObject = gameObject)
-    );
+    this.objectPanels.openSheet(gameObject, title, { width: 400, height: 300 });
   }
 
   private setRange(degree: number = this.range().rotate) {
@@ -466,6 +486,7 @@ export class RangeComponent {
     const rangeCanvasRef = this.rangeCanvas();
     if (!gridCanvasRef || !rangeCanvasRef) return;
     if (!gridCanvasRef.nativeElement.getContext('2d')) return;
+    perfCounters.bump(PERF_RANGE_RENDER);
     const render = new RangeRender(gridCanvasRef.nativeElement, rangeCanvasRef.nativeElement);
 
     const w = this.width();

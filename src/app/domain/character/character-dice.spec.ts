@@ -99,6 +99,13 @@ describe('the dice a character keeps', () => {
     expect(heldDiceOf(character)).toEqual([]);
   });
 
+  it('says whether the die was kept', () => {
+    const character = makeCharacter();
+
+    expect(storeHeldDie(character, heldDieOfSymbol(makeSymbol('攻撃ダイス')))).toBe(true);
+    expect(storeHeldDie(character, { name: '空のダイス', count: 1, faces: [] })).toBe(false);
+  });
+
   it('lowers the count when one is taken back', () => {
     const character = makeCharacter();
     storeHeldDie(character, { ...heldDieOfSymbol(makeSymbol('攻撃ダイス')), count: 3 });
@@ -187,6 +194,29 @@ describe('the dice a character keeps', () => {
       expect(heldDiceOf(character)[0].shown).toEqual(['3', '5']);
     });
 
+    it('records none for a die that was kept to its owner', () => {
+      const character = makeCharacter();
+      const symbol = makeSymbol('隠しダイス');
+      symbol.face = '6';
+      symbol.owner = 'somebody';
+
+      storeHeldDie(character, heldDieOfSymbol(symbol));
+
+      expect(heldDiceOf(character)[0].shown).toEqual([]);
+    });
+
+    it('writes nothing where the sheet shows the face of such a die', () => {
+      const character = makeCharacter();
+      const symbol = makeSymbol('隠しダイス');
+      symbol.face = '6';
+      symbol.owner = 'somebody';
+
+      storeHeldDie(character, heldDieOfSymbol(symbol));
+
+      const section = character.detailDataElement!.getFirstElementByName(HELD_DICE_SECTION)!;
+      expect(section.getFirstElementByName(HELD_DICE_SHOWN)?.value).toBe('');
+    });
+
     it('records none for a die written onto the sheet by hand', () => {
       const character = makeCharacter();
 
@@ -251,6 +281,23 @@ describe('the dice a character keeps', () => {
 
     it('hands over nothing from a character that keeps none', () => {
       expect(takeHeldDice(makeCharacter())).toEqual([]);
+    });
+
+    it('writes the next set under an identifier of its own', () => {
+      // The section that was taken away is one the rest of the table has been told to delete.
+      // One arriving under that same identifier is refused there, and the deletion comes back
+      // to take this one away as well.
+      const character = makeCharacter();
+      storeHeldDie(character, heldDieOfSymbol(makeSymbol('攻撃ダイス')));
+      const taken = character.detailDataElement!.getFirstElementByName(HELD_DICE_SECTION)!.identifier;
+
+      takeHeldDice(character);
+      storeHeldDie(character, heldDieOfSymbol(makeSymbol('攻撃ダイス')));
+
+      const section = character.detailDataElement!.getFirstElementByName(HELD_DICE_SECTION)!;
+      expect(section.identifier).not.toBe(taken);
+      expect(ObjectStore.instance.isDeleted(section.identifier)).toBe(false);
+      expect(heldDiceOf(character).map((die) => die.name)).toEqual(['攻撃ダイス']);
     });
   });
 });

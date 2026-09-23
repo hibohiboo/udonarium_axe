@@ -1,8 +1,8 @@
 import { DestroyRef, inject, Injectable } from '@angular/core';
 import { RoomSnapshotService } from '@axe/application/file/room-snapshot.service';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { RolePermissionService } from '@axe/application/permission/role-permission.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import { SNAPSHOT_BUSY_RETRY_MS, snapshotDelays } from '@axe/features/room-archive/room-snapshot-schedule';
 
 const IDLE_CALLBACK_TIMEOUT_MS = 10_000;
@@ -26,9 +26,17 @@ export class RoomArchiveEventHandlerService {
     this.destroyRef.onDestroy(() => this.clearTimers());
   }
 
+  /**
+   * Takes a snapshot of the room in this browser, when anything has changed since the last one.
+   *
+   * Nothing is taken while keeping is turned off or for a role that may not edit the table. While a
+   * restore is under way or a piece is being dragged it tries again a few seconds later; otherwise
+   * it waits for the browser to have a quiet moment first.
+   */
   async flush(): Promise<void> {
     this.clearTimers();
     if (!this.isDirty) return;
+    if (!this.roomSnapshot.isKeeping()) return;
     if (!this.rolePermission.canEditTabletop) return;
     if (this.roomSnapshot.isRestoring() || this.isBusy()) {
       this.retryLater();
@@ -60,7 +68,7 @@ export class RoomArchiveEventHandlerService {
   }
 
   private markDirty(): void {
-    if (!this.roomSnapshot.isSupported) return;
+    if (!this.roomSnapshot.isSupported || !this.roomSnapshot.isKeeping()) return;
     this.isDirty = true;
     const { idle, max } = snapshotDelays(this.roomSnapshot.lastCaptureMs());
     if (this.idleTimer !== null) clearTimeout(this.idleTimer);

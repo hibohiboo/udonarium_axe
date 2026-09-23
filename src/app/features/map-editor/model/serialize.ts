@@ -1,4 +1,5 @@
 import { GridType } from '@axe/domain/tabletop/game-table';
+import { asFunctionRole, sanitizeFunctionSpec } from '@axe/features/map-editor/model/function-layer';
 import {
   DEFAULT_SCENE_BACKGROUND,
   DEFAULT_SCENE_GRID_COLOR,
@@ -7,6 +8,7 @@ import {
   MAP_SCENE_VERSION,
   MapLayer,
   MapScene,
+  SceneGuideLine,
   ShapeItem,
   ShapeShadow,
   StrokeDash,
@@ -14,6 +16,10 @@ import {
 } from '@axe/features/map-editor/model/scene';
 import { normalizeTextureId } from '@axe/features/map-editor/model/textures';
 
+/**
+ * The JSON text of a scene, stamped with the current scene version, as map files and whiteboards
+ * store it.
+ */
 export function serializeScene(scene: MapScene): string {
   return JSON.stringify({ ...scene, version: MAP_SCENE_VERSION });
 }
@@ -26,7 +32,7 @@ function isPositiveFiniteNumber(v: unknown): v is number {
   return isFiniteNumber(v) && (v as number) > 0;
 }
 
-const VALID_KINDS = new Set(['cell', 'shape', 'stamp', 'freehand', 'text', 'image']);
+const VALID_KINDS = new Set(['cell', 'shape', 'stamp', 'freehand', 'text', 'image', 'function']);
 
 const VALID_DASHES = new Set<StrokeDash>(['solid', 'dashed', 'dotted', 'dashdot', 'longdash']);
 
@@ -99,7 +105,21 @@ function sanitizeImageItem(raw: unknown): ImageItem | null {
   const r = raw as Record<string, unknown>;
   const item = { ...r } as unknown as ImageItem;
   if ('clipToCells' in r) item.clipToCells = r['clipToCells'] === true;
+  if ('flipX' in r) item.flipX = r['flipX'] === true;
+  if ('flipY' in r) item.flipY = r['flipY'] === true;
+  item.crop = sanitizeCrop(r['crop']);
+  if (!item.crop) delete item.crop;
   return item;
+}
+
+function sanitizeCrop(raw: unknown): ImageItem['crop'] {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const sides = ['x', 'y', 'w', 'h'].map((side) => r[side]);
+  if (!sides.every((side) => typeof side === 'number' && Number.isFinite(side))) return undefined;
+  const [x, y, w, h] = sides as number[];
+  if (w <= 0 || h <= 0) return undefined;
+  return { x, y, w, h };
 }
 
 const VALID_GRID_TYPES = new Set<number>([
@@ -122,6 +142,12 @@ function isValidLayer(layer: unknown): boolean {
   return true;
 }
 
+/**
+ * Whether a value has the outline of a scene: a numeric version, positive columns, rows and cell
+ * size, and layers that each have an id, a known kind and a name.
+ *
+ * Only the outline is checked; the layers' contents are cleaned by `deserializeScene`.
+ */
 export function isMapScene(value: unknown): value is MapScene {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -136,6 +162,16 @@ export function isMapScene(value: unknown): value is MapScene {
   return true;
 }
 
+/** A painted cell is remembered by its key alone, so whatever was written for it reads as painted. */
+function sanitizeFunctionCells(value: unknown): Record<string, true> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const cells: Record<string, true> = {};
+  for (const [key, held] of Object.entries(value as Record<string, unknown>)) {
+    if (held) cells[key] = true;
+  }
+  return cells;
+}
+
 function sanitizeLayer(raw: Record<string, unknown>): MapLayer {
   const base = {
     id: String(raw['id'] ?? ''),
@@ -144,6 +180,7 @@ function sanitizeLayer(raw: Record<string, unknown>): MapLayer {
     visible: raw['visible'] !== false,
     locked: raw['locked'] === true,
     opacity: Math.max(0, Math.min(1, isFiniteNumber(raw['opacity']) ? (raw['opacity'] as number) : 1)),
+    group: typeof raw['group'] === 'string' && raw['group'] ? (raw['group'] as string) : undefined,
   };
 
   switch (raw['kind']) {
@@ -154,6 +191,14 @@ function sanitizeLayer(raw: Record<string, unknown>): MapLayer {
         cells: (typeof raw['cells'] === 'object' && raw['cells'] !== null && !Array.isArray(raw['cells'])
           ? raw['cells']
           : {}) as Record<string, never>,
+      };
+    case 'function':
+      return {
+        ...base,
+        kind: 'function',
+        role: asFunctionRole(raw['role']),
+        cells: sanitizeFunctionCells(raw['cells']),
+        spec: sanitizeFunctionSpec(raw['spec']),
       };
     case 'shape':
       return {
@@ -182,6 +227,13 @@ function sanitizeLayer(raw: Record<string, unknown>): MapLayer {
   }
 }
 
+/**
+ * Reads a scene from JSON text, cleaning it as it goes, or null when the text is not JSON or not a
+ * scene.
+ *
+ * Layers of unknown kinds are dropped, missing settings fall back to their defaults, and shapes and
+ * images that cannot be drawn are left out. The result always carries the current scene version.
+ */
 export function deserializeScene(json: string): MapScene | null {
   let parsed: unknown;
   try {
@@ -212,5 +264,15 @@ export function deserializeScene(json: string): MapScene | null {
     gridColor: typeof raw['gridColor'] === 'string' ? raw['gridColor'] : DEFAULT_SCENE_GRID_COLOR,
     gridVisible: raw['gridVisible'] !== false,
     layers: rawLayers.map((l) => sanitizeLayer(l as Record<string, unknown>)),
+    guides: sanitizeGuides(raw['guides']),
   };
+}
+
+function sanitizeGuides(raw: unknown): SceneGuideLine[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const kept = raw
+    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .filter((entry) => (entry['axis'] === 'x' || entry['axis'] === 'y') && isFiniteNumber(entry['at']))
+    .map((entry) => ({ id: String(entry['id'] ?? ''), axis: entry['axis'] as 'x' | 'y', at: entry['at'] as number }));
+  return kept.length > 0 ? kept : undefined;
 }

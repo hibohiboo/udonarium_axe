@@ -2,10 +2,12 @@ import { NgStyle } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { EffectFieldRenderable, EffectFieldService } from '@axe/application/effect/effect-field.service';
 import { EffectPlaybackService } from '@axe/application/effect/effect-playback.service';
+import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
 import { VisionService } from '@axe/application/tabletop/vision.service';
 import { UiSignalService } from '@axe/application/ui/ui-signal.service';
 import { ObjectStore } from '@axe/core/sync/object-store';
+import { PERF_EFFECT_RENDERABLES, perfCounters } from '@axe/core/util/perf-counters';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { EffectParticleLayer, effectParticles } from '@axe/domain/effect/effect-particles';
 import { stagedEffectParticles } from '@axe/domain/effect/effect-stage-timeline';
@@ -35,6 +37,7 @@ export interface EffectCanvasPlacement {
 const CAMERA_LIFT_PX = 40;
 
 const MAX_SPRITES = 400;
+const NOTHING_HIDDEN: ReadonlySet<string> = new Set<string>();
 const MAX_CANVASES = 24;
 
 @Component({
@@ -51,6 +54,7 @@ export class TableEffectOverlayComponent {
   private readonly uiSignalService = inject(UiSignalService);
   private readonly visionService = inject(VisionService);
   private readonly objectStore = inject(ObjectStore);
+  private readonly objectChange = inject(ObjectChangeService);
 
   /**
    * Gathers the effects playing and the fields left standing into one thing to draw.
@@ -58,8 +62,30 @@ export class TableEffectOverlayComponent {
    * Whether a target can be seen is settled once here; asking separately for the billboards
    * and the particles would run that check twice a frame for every target.
    */
+  private readonly hiddenByKey = computed<ReadonlyMap<string, ReadonlySet<string>>>(() => {
+    const hidden = new Map<string, ReadonlySet<string>>();
+    for (const active of this.playback.activeCasts()) {
+      hidden.set(String(active.key), this.hiddenIdentifiersOf(active.cast.targets.map((target) => target.identifier)));
+    }
+    for (const field of this.fieldService.fields()) {
+      hidden.set(`field-${field.identifier}`, this.hiddenIdentifiersOf([field.identifier]));
+    }
+    return hidden;
+  });
+
+  private readonly nothingToRender: (EffectFieldRenderable & { hidden: ReadonlySet<string> })[] = [];
+
+  /**
+   * Everything to draw this frame.
+   *
+   * With no cast playing and no field standing it reads no clock and hands back the same empty
+   * list, so the weather keeping the frame loop running does not rebuild the sprites every frame.
+   */
   private readonly renderables = computed<(EffectFieldRenderable & { hidden: ReadonlySet<string> })[]>(() => {
+    if (this.playback.activeCasts().length < 1 && this.fieldService.fields().length < 1) return this.nothingToRender;
+    perfCounters.bump(PERF_EFFECT_RENDERABLES);
     const now = this.playback.now();
+    const hiddenByKey = this.hiddenByKey();
     const all: EffectFieldRenderable[] = [
       ...this.playback.activeCasts().map((active) => ({
         key: String(active.key),
@@ -69,10 +95,7 @@ export class TableEffectOverlayComponent {
       })),
       ...this.fieldService.renderables(now),
     ];
-    return all.map((active) => ({
-      ...active,
-      hidden: this.hiddenIdentifiersOf(active.cast.targets.map((target) => target.identifier)),
-    }));
+    return all.map((active) => ({ ...active, hidden: hiddenByKey.get(active.key) ?? NOTHING_HIDDEN }));
   });
 
   readonly sprites = computed<EffectSprite[]>(() => {
@@ -255,9 +278,9 @@ export class TableEffectOverlayComponent {
     const hidden = new Set<string>();
     for (const identifier of identifiers) {
       const character = this.objectStore.get<GameCharacter>(identifier);
-      if (character instanceof GameCharacter && !this.visionService.isTokenVisible(character)) {
-        hidden.add(identifier);
-      }
+      if (!(character instanceof GameCharacter)) continue;
+      this.objectChange.versionOf(identifier)();
+      if (!this.visionService.isTokenVisible(character)) hidden.add(identifier);
     }
     return hidden;
   }

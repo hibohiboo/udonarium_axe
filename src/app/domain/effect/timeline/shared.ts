@@ -1,8 +1,11 @@
+import { seededRandom } from '@axe/core/util/seeded-random';
 import { type EffectCast } from '@axe/domain/effect/effect-cast';
 import { type EffectKind } from '@axe/domain/effect/effect-kind';
 import { type EffectPreset } from '@axe/domain/effect/effect-preset';
 import { type ShapeColors } from '@axe/domain/effect/effect-shapes';
 import { type ViewRotation } from '@axe/domain/effect/effect-view';
+
+export { seededRandom };
 
 /**
  * The shared groundwork.
@@ -89,6 +92,7 @@ export interface Point3 {
 }
 
 const FLARE_SPIKE_COUNT = 4;
+/** A point the given share of the way from the origin to the centre, in a straight line. */
 export function along(origin: Point3, center: Point3, at: number): Point3 {
   return {
     x: origin.x + (center.x - origin.x) * at,
@@ -104,6 +108,9 @@ export function glow(innerRadius: number, innerColor: string, outerRadius?: numb
   return `${inner}, 0 0 ${Math.round(outerRadius * 1.4)}px ${outerColor}`;
 }
 
+/**
+ * The preset's primary and secondary colours, as the core and edge colours the shape drawings take.
+ */
 export function colorsOf(preset: EffectPreset): ShapeColors {
   return { core: preset.colorPrimary, edge: preset.colorSecondary };
 }
@@ -148,6 +155,7 @@ export function projectileOrigin(cast: EffectCast, center: Point3, base: number)
   return { x: center.x - base * 4, y: center.y - base * 4, z: center.z + base * 4 };
 }
 
+/** Rounds to two decimal places, which keeps the numbers written into a sprite's CSS short. */
 export function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -161,6 +169,12 @@ export function pointBetween(from: Point3, to: Point3, at: number): Point3 {
   };
 }
 
+/**
+ * A sprite with every field at its neutral value: at the origin, unturned, fully opaque, facing the
+ * camera and drawing nothing.
+ *
+ * Painters spread it first and set only what they use.
+ */
 export function blank(): EffectSprite {
   return {
     key: '',
@@ -191,15 +205,26 @@ export function takeRandoms(random: () => number, count: number): number[] {
   return values;
 }
 
+/**
+ * A progress value with anything that is not a finite number turned into 0.
+ *
+ * Unlike clamp01 it leaves the value unbounded, so a painter can still tell below 0 and past 1
+ * apart from the span in between.
+ */
 export function normalize(value: number): number {
   return Number.isFinite(value) ? value : 0;
 }
 
+/** Holds a value between 0 and 1, reading anything that is not a finite number as 0. */
 export function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), 1);
 }
 
+/**
+ * Cubic ease-out over 0 to 1: quick at first and settling towards the end. Input outside that range
+ * is clamped.
+ */
 export function easeOutCubic(value: number): number {
   const clamped = Math.min(Math.max(value, 0), 1);
   return 1 - Math.pow(1 - clamped, 3);
@@ -211,14 +236,4 @@ export function fadeInOut(value: number, rise: number): number {
   const clamped = clamp01(value);
   if (clamped < rise) return clamped / rise;
   return 1 - (clamped - rise) / (1 - rise);
-}
-
-export function seededRandom(seed: number): () => number {
-  let state = Math.floor(Math.abs(seed)) % 4294967296 || 1;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let value = Math.imul(state ^ (state >>> 15), 1 | state);
-    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-  };
 }

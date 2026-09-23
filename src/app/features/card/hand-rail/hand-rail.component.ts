@@ -12,13 +12,14 @@ import {
 } from '@angular/core';
 import { CardGameService } from '@axe/application/card/card-game.service';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { CoordinateService } from '@axe/application/input/coordinate.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { TableFocusService } from '@axe/application/tabletop/table-focus.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
 import { MobileLayoutService } from '@axe/application/ui/mobile-layout.service';
 import { PanelService } from '@axe/application/ui/panel.service';
 import { SelectionSignalService } from '@axe/application/ui/selection-signal.service';
 import { ViewportService } from '@axe/application/ui/viewport.service';
-import { CoordinateService } from '@axe/core/input/coordinate.service';
 import { ObjectStore } from '@axe/core/sync/object-store';
 import { Card } from '@axe/domain/card/card';
 import { findTrumpPairs } from '@axe/domain/card/trump-card';
@@ -41,15 +42,15 @@ import {
   layoutHandFan,
 } from '@axe/features/card/hand-rail/hand-fan';
 import { HandRailService } from '@axe/features/card/hand-rail/hand-rail.service';
+import { CardFacePreviewComponent } from '@axe/ui/components/card-face-preview/card-face-preview.component';
 import { DraggableDirective } from '@axe/ui/directives/draggable.directive';
-import { SafePipe } from '@axe/ui/pipes/safe.pipe';
 import { TranslocoModule } from '@jsverse/transloco';
 
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'app-hand-rail',
   templateUrl: './hand-rail.component.html',
-  imports: [DraggableDirective, NgClass, SafePipe, TranslocoModule],
+  imports: [DraggableDirective, NgClass, TranslocoModule, CardFacePreviewComponent],
 })
 export class HandRailComponent {
   private readonly destroyRef = inject(DestroyRef);
@@ -60,6 +61,7 @@ export class HandRailComponent {
   private readonly objectStore = inject(ObjectStore);
   private readonly objectChange = inject(ObjectChangeService);
   private readonly selectionSignalService = inject(SelectionSignalService);
+  private readonly tableFocus = inject(TableFocusService);
   private readonly coordinateService = inject(CoordinateService);
   private readonly tabletopService = inject(TabletopService);
   protected readonly rail = inject(HandRailService);
@@ -122,13 +124,13 @@ export class HandRailComponent {
   }
 
   readonly canHoldCards = computed(() => {
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     return canRoleEdit(PeerCursor.myRole);
   });
 
   readonly cards = computed<Card[]>(() => {
     this.objectChange.collectionOf(Card.aliasName)();
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     const userId = this.cardGame.myUserId();
     const all = this.objectStore.getObjects<Card>(Card);
     for (const card of all) this.objectChange.versionOf(card.identifier)();
@@ -209,7 +211,7 @@ export class HandRailComponent {
     card.update();
     this.objectChange.notifyChanged(card.identifier);
     this.selectionSignalService.selectObject(card.identifier, card.aliasName);
-    if (focus) this.selectionSignalService.focusToCoordinate(card.location.x, card.location.y);
+    if (focus) this.tableFocus.focusOn(card);
   }
 
   protected readonly pairCount = computed(() => findTrumpPairs(this.cards()).length);

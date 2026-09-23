@@ -1,6 +1,7 @@
 import { NgStyle } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
+import { PointerDeviceService } from '@axe/application/input/pointer-device.service';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { AmbienceService } from '@axe/application/tabletop/ambience.service';
 import { TabletopService } from '@axe/application/tabletop/tabletop.service';
@@ -8,7 +9,6 @@ import { ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { PanelOption, PanelService } from '@axe/application/ui/panel.service';
 import { PieceContextMenuService } from '@axe/application/ui/piece-context-menu.service';
 import { UiSignalService } from '@axe/application/ui/ui-signal.service';
-import { PointerDeviceService } from '@axe/core/input/pointer-device.service';
 import {
   groundSurfaceLayer,
   groundSurfaceWash,
@@ -18,9 +18,10 @@ import {
 } from '@axe/domain/effect/ambience/ambience-ground';
 import { EffectParticleLayer } from '@axe/domain/effect/effect-particles';
 import { PresetSound, SoundEffect } from '@axe/domain/media/sound-effect';
+import { multiAngleFontScaleFactor } from '@axe/domain/tabletop/multi-angle-font-scale';
 import { TableAmbience } from '@axe/domain/tabletop/table-ambience';
 import { EffectCanvasComponent } from '@axe/features/effect/effect-canvas/effect-canvas.component';
-import { buildTableAmbienceContextMenu } from '@axe/features/tabletop/table-ambience/table-ambience-context-menu';
+import { buildTableAmbienceContextMenuModel } from '@axe/features/tabletop/table-ambience/table-ambience-context-menu';
 import { TableAmbienceSettingsComponent } from '@axe/features/tabletop/table-ambience/table-ambience-settings.component';
 import { MovableDirective, MovableOption } from '@axe/ui/directives/movable.directive';
 import { SelectableDirective } from '@axe/ui/directives/selectable.directive';
@@ -196,8 +197,21 @@ export class TableAmbienceComponent {
     const menuPosition = this.pointerDeviceService.pointers[0];
     if (this.pieceContextMenu.openForSelection(area, this.gridSize(), menuPosition)) return;
 
-    const menu = buildTableAmbienceContextMenu(area, this.gridSize(), () => this.openSettings(area), this.t);
-    this.contextMenuService.open(menuPosition, menu, area.name);
+    const menu = buildTableAmbienceContextMenuModel(area, this.gridSize(), () => this.openSettings(area), this.t);
+    const display = this.tabletopService.display();
+    if (this.tabletopService.mode2d() && display.tabletopMenuStyle !== 'standard') {
+      this.contextMenuService.openRadial(
+        menuPosition,
+        menu.actions,
+        menu.radialGroups,
+        area.name,
+        display.tabletopMenuStyle === 'radial',
+        display.radialMenuRotationSpeed,
+        multiAngleFontScaleFactor(display.multiAngleFontScale)
+      );
+      return;
+    }
+    this.contextMenuService.open(menuPosition, menu.actions, area.name);
   }
 
   private openSettings(area: TableAmbience): void {

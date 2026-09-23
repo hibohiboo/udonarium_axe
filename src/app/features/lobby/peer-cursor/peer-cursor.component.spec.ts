@@ -1,5 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ChatMessageService } from '@axe/application/chat/chat-message.service';
+import { ObjectChangeService } from '@axe/application/sync/object-change.service';
 import { BatchService } from '@axe/application/ui/batch.service';
 import { localDispatch } from '@axe/core/network/network-messaging';
 import { ObjectStore } from '@axe/core/sync/object-store';
@@ -7,12 +8,12 @@ import { ChatTab } from '@axe/domain/chat/chat-tab';
 import { ChatTabList } from '@axe/domain/chat/chat-tab-list';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { PeerCursorComponent } from '@axe/features/lobby/peer-cursor/peer-cursor.component';
+import { beMyself } from '@axe/testing/peer-context-stub';
 import { TEST_PROVIDERS } from '@axe/testing/test-providers';
 
 describe('PeerCursorComponent', () => {
   let component: PeerCursorComponent;
   let fixture: ComponentFixture<PeerCursorComponent>;
-  let store: ObjectStore;
   let batchService: BatchService;
 
   beforeEach(async () => {
@@ -23,16 +24,14 @@ describe('PeerCursorComponent', () => {
   });
 
   beforeEach(() => {
-    store = ObjectStore.instance;
     batchService = TestBed.inject(BatchService);
     fixture = TestBed.createComponent(PeerCursorComponent);
     component = fixture.componentInstance;
   });
 
   afterEach(() => {
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
+    for (const object of ObjectStore.instance.getObjects()) ObjectStore.instance.delete(object, false);
+    ObjectStore.instance.clearDeleteHistory();
     PeerCursor.myCursor = null!;
     (PeerCursor as unknown as Record<string, unknown>)['userIdMap'] = new Map();
     (PeerCursor as unknown as Record<string, unknown>)['peerIdMap'] = new Map();
@@ -42,6 +41,29 @@ describe('PeerCursorComponent', () => {
 
   it('should create', () => {
     expect(component).toBeTruthy();
+  });
+
+  it('names a peer who renames themselves, without the cursor being moved', async () => {
+    // The cursor belongs to somebody else, so the name over it is the only thing on the cursor
+    // that moves with the rename. Nothing is checked by hand: it has to follow because the
+    // signals said so.
+    beMyself('me');
+    const other = new PeerCursor();
+    other.userId = 'other';
+    other.name = 'まえの名前';
+    other.initialize();
+    fixture.componentRef.setInput('cursor', other);
+    fixture.detectChanges();
+    const shown = () => (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(shown()).toContain('まえの名前');
+
+    other.name = 'あとの名前';
+    TestBed.inject(ObjectChangeService).notifyChanged(other.identifier);
+    await fixture.whenStable();
+
+    expect(shown()).toContain('あとの名前');
+    expect(shown()).not.toContain('まえの名前');
+    other.destroy();
   });
 
   it('tears down without throwing when no timer was set', () => {

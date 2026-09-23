@@ -9,6 +9,7 @@ import { EffectTargetingService } from '@axe/application/effect/effect-targeting
 import { SaveDataService } from '@axe/application/file/save-data.service';
 import { TRANSLATE_FN } from '@axe/application/i18n/translate.token';
 import { ObjectChangeService } from '@axe/application/sync/object-change.service';
+import { ConfirmService } from '@axe/application/ui/confirm.service';
 import { ContextMenuService } from '@axe/application/ui/context-menu.service';
 import { ModalService } from '@axe/application/ui/modal.service';
 import { PanelService } from '@axe/application/ui/panel.service';
@@ -21,6 +22,7 @@ import { EffectField } from '@axe/domain/effect/effect-field';
 import { EffectPreset } from '@axe/domain/effect/effect-preset';
 import { EffectPresetSet } from '@axe/domain/effect/effect-preset-set';
 import { kindGlyphSvg } from '@axe/domain/effect/effect-shapes';
+import { emptyHotbarSlotDraft } from '@axe/domain/hotbar/hotbar-draft';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 import { buildEffectLibraryContextMenu } from '@axe/features/effect/effect-library-panel/effect-library-context-menu';
 import {
@@ -33,7 +35,7 @@ import {
 } from '@axe/features/effect/effect-library-panel/effect-library-list';
 import { pushRecentEffect, readRecentEffects } from '@axe/features/effect/effect-library-panel/recent-effects';
 import { EffectPresetEditorComponent } from '@axe/features/effect/effect-preset-editor/effect-preset-editor.component';
-import { ConfirmDialogComponent } from '@axe/ui/components/confirm-dialog/confirm-dialog.component';
+import { HotbarFillService } from '@axe/features/hotbar/hotbar-fill.service';
 import { SafePipe } from '@axe/ui/pipes/safe.pipe';
 import { TranslocoModule } from '@jsverse/transloco';
 
@@ -46,6 +48,7 @@ const GRADE_LEVELS: readonly number[] = [1, 2, 3];
   imports: [FormsModule, NgTemplateOutlet, SafePipe, TranslocoModule],
 })
 export class EffectLibraryPanelComponent {
+  private readonly hotbarFill = inject(HotbarFillService);
   private readonly library = inject(EffectLibraryService);
   private readonly castService = inject(EffectCastService);
   private readonly targeting = inject(EffectTargetingService);
@@ -60,6 +63,7 @@ export class EffectLibraryPanelComponent {
   private readonly modalService = inject(ModalService);
   private readonly panelService = inject(PanelService);
   private readonly t = inject(TRANSLATE_FN);
+  private readonly confirm = inject(ConfirmService);
 
   protected readonly gradeLevels = GRADE_LEVELS;
 
@@ -71,7 +75,7 @@ export class EffectLibraryPanelComponent {
   readonly tags = computed<string[]>(() => collectTags(this.library.presets()));
 
   readonly isGameMaster = computed<boolean>(() => {
-    if (PeerCursor.myCursor) this.objectChange.versionOf(PeerCursor.myCursor.identifier)();
+    this.objectChange.trackMyCursor();
     return PeerCursor.isMyselfGameMaster;
   });
 
@@ -274,16 +278,24 @@ export class EffectLibraryPanelComponent {
   }
 
   protected removePreset(preset: EffectPreset): void {
-    this.modalService
-      .open<boolean>(ConfirmDialogComponent, {
+    void this.confirm
+      .ask({
         message: this.t('feature.effect.removeConfirm', { name: preset.name }),
         okLabel: this.t('common.button.delete'),
         danger: true,
       })
       .then((ok) => {
-        if (ok !== true) return;
+        if (!ok) return;
         this.library.remove(preset);
       });
+  }
+
+  /** Hands the effect to the hotbar, which finds it a free slot and comes out to show it. */
+  private addToHotbar(preset: EffectPreset): void {
+    const draft = emptyHotbarSlotDraft('effect');
+    draft.value = preset.name;
+    draft.valueName = preset.name;
+    this.hotbarFill.fill(draft);
   }
 
   protected openEditor(preset: EffectPreset): void {
@@ -311,6 +323,7 @@ export class EffectLibraryPanelComponent {
           onPreview: () => this.previewPreset(preset),
           onInsertToken: () => this.insertToken(preset),
           onPlaceField: () => this.placeField(preset),
+          onAddToHotbar: () => this.addToHotbar(preset),
           onExport: () => this.exportPreset(preset),
           onRemove: () => this.removePreset(preset),
         },

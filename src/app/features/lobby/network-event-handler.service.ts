@@ -26,11 +26,16 @@ export class NetworkEventHandlerService {
     failed: 'feature.lobby.peerReconnect.failed',
   };
   private serverErrorReconnectAttempts = 0;
+  private otherErrorReconnectAttempts = 0;
   private serverErrorReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private localMode = false;
 
   constructor() {
     this.objectChange.loadConfig$.subscribe((event) => {
-      Network.configure(event.config as Record<string, unknown>);
+      const config = event.config as Record<string, unknown>;
+      this.localMode = config.localMode === true;
+      Network.configure(config);
+      if (this.localMode) return;
       Network.openStandby(loadIdentity()?.userId);
     }, this.destroyRef);
     this.objectChange.networkOpen$.subscribe(() => {
@@ -38,15 +43,10 @@ export class NetworkEventHandlerService {
       const peer = Network.peerContext;
       PeerCursor.myCursor.peerId = peer.peerId;
       PeerCursor.myCursor.userId = peer.userId;
-      saveIdentity({
-        userId: peer.userId,
-        roomId: peer.roomId,
-        roomName: peer.roomName,
-        role: PeerCursor.myCursor.role,
-        reConnectPass: PeerCursor.myCursor.reConnectPass,
-      });
+      this.rememberIdentity(peer);
     }, this.destroyRef);
     this.objectChange.networkError$.subscribe((event) => {
+      if (this.localMode) return;
       const { errorType, errorMessage } = event;
       const quietErrorTypes = ['peer-unavailable'];
       if (quietErrorTypes.includes(errorType)) return;
@@ -58,14 +58,28 @@ export class NetworkEventHandlerService {
         return;
       }
 
+      // Any error can repeat without end - a token the cloud will not accept fails again the
+      // moment it is retried - so a limit of the same size bounds these too. Counted apart from
+      // the server's: sharing the one count would make a server error take its wait from wherever
+      // the other errors left off, turning three tries of three, eight and fifteen seconds into a
+      // single wait of fifteen.
+      if (this.otherErrorReconnectAttempts >= NetworkEventHandlerService.MAX_SERVER_ERROR_RECONNECTS) return;
+      this.otherErrorReconnectAttempts++;
+
       this.chatMessageService.sendSystemMessage(this.resolveNetworkErrorMessage(errorType, errorMessage));
-      this.chatMessageService.sendSystemMessage(encodeI18nMessage('feature.lobby.errors.reconnecting'));
+      if (this.otherErrorReconnectAttempts >= NetworkEventHandlerService.MAX_SERVER_ERROR_RECONNECTS) {
+        // The last try. Said now rather than on the next error, which may never come.
+        this.chatMessageService.sendSystemMessage(encodeI18nMessage('feature.lobby.errors.lastReconnect'));
+      } else {
+        this.chatMessageService.sendSystemMessage(encodeI18nMessage('feature.lobby.errors.reconnecting'));
+      }
       Network.openStandby(loadIdentity()?.userId);
     }, this.destroyRef);
     this.objectChange.peerConnect$.subscribe(() => {
       this.chatMessageService.calibrateTimeOffset();
     }, this.destroyRef);
     this.objectChange.peerReconnect$.subscribe((event) => {
+      if (this.localMode) return;
       const key = NetworkEventHandlerService.RECONNECT_MESSAGE_KEYS[event.state];
       if (!key) return;
       this.chatMessageService.sendSystemMessage(encodeI18nMessage(key, { name: this.resolvePeerName(event.peerId) }));
@@ -89,6 +103,25 @@ export class NetworkEventHandlerService {
     );
   }
 
+  /**
+   * Writes down who this tab is, so a reload can pick up where it left off.
+   *
+   * A reload opens the waiting connection before any room, and that connection belongs to no
+   * room. Written down as it stands, it would wipe out the room the tab had just been in, and a
+   * game master coming back to their own table could no longer be told from one walking into
+   * somebody else's. Outside a room, the room last written down is kept.
+   */
+  private rememberIdentity(peer: { userId: string; roomId: string; roomName: string; isRoom: boolean }): void {
+    const last = peer.isRoom ? null : loadIdentity();
+    saveIdentity({
+      userId: peer.userId,
+      roomId: last?.roomId ?? peer.roomId,
+      roomName: last?.roomName ?? peer.roomName,
+      role: PeerCursor.myCursor.role,
+      reConnectPass: PeerCursor.myCursor.reConnectPass,
+    });
+  }
+
   private handleServerErrorReconnect(): void {
     if (this.serverErrorReconnectAttempts >= NetworkEventHandlerService.MAX_SERVER_ERROR_RECONNECTS) {
       this.chatMessageService.sendSystemMessage(encodeI18nMessage('feature.lobby.errors.skywayServer'));
@@ -110,6 +143,7 @@ export class NetworkEventHandlerService {
 
   private resetServerErrorReconnect(): void {
     this.serverErrorReconnectAttempts = 0;
+    this.otherErrorReconnectAttempts = 0;
     if (this.serverErrorReconnectTimer != null) {
       clearTimeout(this.serverErrorReconnectTimer);
       this.serverErrorReconnectTimer = null;

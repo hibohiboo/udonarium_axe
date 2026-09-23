@@ -1,17 +1,10 @@
 import { TestBed } from '@angular/core/testing';
-import { ObjectStore } from '@axe/core/sync/object-store';
 import { waitZeroTimeout } from '@axe/core/util/zero-timeout';
 import { Config } from '@axe/domain/peer/config';
 
 describe('Config', () => {
-  let store: ObjectStore;
-
   beforeEach(() => {
     TestBed.configureTestingModule({});
-    store = ObjectStore.instance;
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     (Config as unknown as { _instance: Config | undefined })._instance = undefined;
   });
 
@@ -20,9 +13,6 @@ describe('Config', () => {
     // and unless those queues are drained before the objects are deleted an error can be
     // thrown after the test has finished.
     await waitZeroTimeout();
-    const allObjects = store.getObjects();
-    allObjects.forEach((obj) => store.delete(obj, false));
-    store.clearDeleteHistory();
     (Config as unknown as { _instance: Config | undefined })._instance = undefined;
   });
 
@@ -62,6 +52,225 @@ describe('Config', () => {
     it('returns the value it is given', () => {
       Config.instance.roomVolume = 0.5;
       expect(Config.instance.roomVolume).toBe(0.5);
+    });
+  });
+
+  describe('how the round is taken', () => {
+    it('takes the round one piece at a time until it is told otherwise', () => {
+      expect(Config.instance.turnOrderMode).toBe('initiative');
+      expect(Config.instance.factionPhaseMode).toBe('free');
+      expect(Config.instance.factionOrder).toBe('');
+      expect(Config.instance.factionSkipUnassigned).toBe(false);
+    });
+
+    it('returns the modes it is given', () => {
+      Config.instance.turnOrderMode = 'faction';
+      Config.instance.factionPhaseMode = 'initiative';
+
+      expect(Config.instance.turnOrderMode).toBe('faction');
+      expect(Config.instance.factionPhaseMode).toBe('initiative');
+    });
+
+    it('holds the order of the sides as it is written', () => {
+      Config.instance.factionOrder = 'p-a,p-b';
+
+      expect(Config.instance.factionOrder).toBe('p-a,p-b');
+    });
+
+    it('reads a mode it does not know as the one it starts on', () => {
+      Config.instance.setAttribute('_turnOrderMode', 'sides');
+
+      expect(Config.instance.turnOrderMode).toBe('initiative');
+    });
+
+    it('reads the flag back the way a loaded room writes it', () => {
+      Config.instance.factionSkipUnassigned = true;
+      Config.instance.setAttribute(
+        '_factionSkipUnassigned',
+        `${Config.instance.getAttribute('_factionSkipUnassigned')}`
+      );
+
+      expect(Config.instance.factionSkipUnassigned).toBe(true);
+    });
+  });
+
+  describe('the rules of play', () => {
+    it('answers nothing at all until it is asked', () => {
+      expect(Config.instance.roomRuleAnswers).toEqual({
+        moveRangeEnabled: null,
+        moveRangeElementNames: null,
+        moveDiagonally: null,
+        diagonalMove: null,
+        piecesShareCells: null,
+        moveRangeAlways: null,
+        zocAlways: null,
+        cellDistance: null,
+        cellDistanceUnit: null,
+        zocMode: null,
+        zocRange: null,
+        zocExtraCost: null,
+        zocEngages: null,
+        breakOutMode: null,
+        breakOutCost: null,
+        engagementCountsSize: null,
+        facingMark: null,
+        pieceImageInCell: null,
+      });
+    });
+
+    it('holds on to an answer of no rather than forgetting it was asked', () => {
+      Config.instance.moveDiagonally = false;
+      Config.instance.piecesShareCells = false;
+
+      expect(Config.instance.moveDiagonally).toBe(false);
+      expect(Config.instance.piecesShareCells).toBe(false);
+    });
+
+    it('tells an older peer whether a corner may be cut at all', () => {
+      Config.instance.diagonalMove = 'double';
+
+      expect(Config.instance.diagonalMove).toBe('double');
+      expect(Config.instance.moveDiagonally).toBe(true);
+
+      Config.instance.diagonalMove = 'none';
+
+      expect(Config.instance.moveDiagonally).toBe(false);
+    });
+
+    it('gives the corner rule back to the table together with the older answer', () => {
+      Config.instance.diagonalMove = 'alternating';
+      Config.instance.diagonalMove = null;
+
+      expect(Config.instance.diagonalMove).toBeNull();
+      expect(Config.instance.moveDiagonally).toBeNull();
+    });
+
+    it('holds on to a count of nought', () => {
+      Config.instance.zocExtraCost = 0;
+
+      expect(Config.instance.zocExtraCost).toBe(0);
+    });
+
+    it('gives an answer back to the table when it is taken away', () => {
+      Config.instance.zocMode = 'stop';
+      Config.instance.zocRange = 2;
+
+      Config.instance.zocMode = null;
+      Config.instance.zocRange = null;
+
+      expect(Config.instance.zocMode).toBeNull();
+      expect(Config.instance.zocRange).toBeNull();
+    });
+
+    it('answers nothing where the attributes were never written, rather than answering nought', () => {
+      // What an older build hands over carries none of these, and a bag with nothing in it
+      // is what is left. A count read as 0 there would rule that a cell stands for nothing.
+      Config.instance.cellDistance = 5;
+      Config.instance.zocMode = 'stop';
+      Config.instance.moveDiagonally = false;
+
+      for (const attribute of ['_cellDistance', '_zocMode', '_moveDiagonally']) {
+        Config.instance.removeAttribute(attribute);
+      }
+
+      expect(Config.instance.cellDistance).toBeNull();
+      expect(Config.instance.zocMode).toBeNull();
+      expect(Config.instance.moveDiagonally).toBeNull();
+      expect(Config.instance.turnOrderMode).toBe('initiative');
+      expect(Config.instance.factionSkipUnassigned).toBe(false);
+    });
+
+    it('reads an answer back out of the text an attribute carries', () => {
+      Config.instance.moveRangeEnabled = false;
+      Config.instance.cellDistance = 5;
+
+      for (const attribute of ['_moveRangeEnabled', '_cellDistance']) {
+        Config.instance.setAttribute(attribute, `${Config.instance.getAttribute(attribute)}`);
+      }
+
+      expect(Config.instance.moveRangeEnabled).toBe(false);
+      expect(Config.instance.cellDistance).toBe(5);
+    });
+  });
+
+  describe('the items the remote controllers show', () => {
+    it('shows every item until the room picks some out', () => {
+      expect(Config.instance.controllerResources).toBeNull();
+    });
+
+    it('returns the pick it is given, a pick of nothing included', () => {
+      Config.instance.controllerResources = ['HP', 'MP'];
+      expect(Config.instance.controllerResources).toEqual(['HP', 'MP']);
+
+      Config.instance.controllerResources = [];
+      expect(Config.instance.controllerResources).toEqual([]);
+    });
+
+    it('goes back to showing everything when the pick is taken away', () => {
+      Config.instance.controllerResources = ['HP'];
+
+      Config.instance.controllerResources = null;
+
+      expect(Config.instance.controllerResources).toBeNull();
+    });
+
+    it('shows everything for a room from an older build, which carries no attribute for it', () => {
+      Config.instance.controllerResources = ['HP'];
+
+      Config.instance.removeAttribute('_controllerResources');
+
+      expect(Config.instance.controllerResources).toBeNull();
+    });
+
+    it('reads the pick back out of the text a loaded room carries', () => {
+      Config.instance.controllerResources = ['HP', '敏捷度'];
+
+      Config.instance.setAttribute('_controllerResources', `${Config.instance.getAttribute('_controllerResources')}`);
+
+      expect(Config.instance.controllerResources).toEqual(['HP', '敏捷度']);
+    });
+  });
+
+  describe('system avatar', () => {
+    it('starts with no picture of its own', () => {
+      expect(Config.instance.systemAvatarIdentifier).toBe('');
+      expect(Config.instance.systemDiceAvatarIdentifier).toBe('');
+    });
+
+    it('returns the pictures it is given', () => {
+      Config.instance.systemAvatarIdentifier = 'image-a';
+      Config.instance.systemDiceAvatarIdentifier = 'image-b';
+
+      expect(Config.instance.systemAvatarIdentifier).toBe('image-a');
+      expect(Config.instance.systemDiceAvatarIdentifier).toBe('image-b');
+    });
+
+    it('shows the avatar until it is asked not to', () => {
+      expect(Config.instance.isSystemAvatarVisible).toBe(true);
+
+      Config.instance.isSystemAvatarVisible = false;
+
+      expect(Config.instance.isSystemAvatarVisible).toBe(false);
+    });
+
+    it('keeps the speaker to itself until it is asked for', () => {
+      expect(Config.instance.isSpeakerAvatarVisible).toBe(false);
+
+      Config.instance.isSpeakerAvatarVisible = true;
+
+      expect(Config.instance.isSpeakerAvatarVisible).toBe(true);
+    });
+
+    it('reads the flag back the way a loaded room writes it', () => {
+      Config.instance.isSystemAvatarVisible = false;
+      Config.instance.setAttribute('_hideSystemAvatar', `${Config.instance.getAttribute('_hideSystemAvatar')}`);
+
+      expect(Config.instance.isSystemAvatarVisible).toBe(false);
+
+      Config.instance.isSystemAvatarVisible = true;
+      Config.instance.setAttribute('_hideSystemAvatar', `${Config.instance.getAttribute('_hideSystemAvatar')}`);
+
+      expect(Config.instance.isSystemAvatarVisible).toBe(true);
     });
   });
 });

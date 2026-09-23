@@ -63,21 +63,22 @@ composition → features → ui → application → infrastructure → domain �
 - **E2E** — Playwright (`npm run e2e` / `npm run e2e:ui`)
 - **P2P / シリアライズ** — `@skyway-sdk/core` v2 + `@msgpack/msgpack` v3
 - **ダイス** — `bcdice` v4 / **UI セレクト** — `@ng-select/ng-select`
-- **i18n** — `@jsverse/transloco`（言語切替 UI は `features/language-selector`）
+- **i18n** — `@jsverse/transloco`（言語切替 UI は `features/seat-display`）
 
 ## 開発コマンド
 
-| コマンド               | 用途                                                           |
-| ---------------------- | -------------------------------------------------------------- |
-| `npm start`            | 開発サーバー（`ng serve`）                                     |
-| `npm run build`        | プロダクションビルド（`ng build` + 既定設定コピー + zip 生成） |
-| `npm test`             | ユニットテスト（Angular builder + Vitest）                     |
-| `npx vitest run`       | ユニットテスト（直接 Vitest、上記とは別経路）                  |
-| `npm run e2e`          | Playwright E2E                                                 |
-| `npm run e2e:ui`       | Playwright UI モード                                           |
-| `npm run lint`         | ESLint                                                         |
-| `npm run format`       | Prettier 整形                                                  |
-| `npm run format:check` | Prettier チェックのみ                                          |
+| コマンド                               | 用途                                                                               |
+| -------------------------------------- | ---------------------------------------------------------------------------------- |
+| `npm start`                            | 開発サーバー（`ng serve`）                                                         |
+| `npm run build`                        | プロダクションビルド（`ng build` + 既定設定コピー + zip 生成）                     |
+| `npm test`                             | ユニットテスト（Angular builder + Vitest）                                         |
+| `npx vitest run`                       | ユニットテスト（直接 Vitest、上記とは別経路）                                      |
+| `npm run e2e`                          | Playwright E2E                                                                     |
+| `npm run e2e:ui`                       | Playwright UI モード                                                               |
+| `npx playwright test --project=visual` | 演出のスクリーンショット比較（手元のみ・基準画像は `e2e/visual/__screenshots__/`） |
+| `npm run lint`                         | ESLint                                                                             |
+| `npm run format`                       | Prettier 整形                                                                      |
+| `npm run format:check`                 | Prettier チェックのみ                                                              |
 
 ## コミット・フック規約（要点）
 
@@ -88,7 +89,9 @@ composition → features → ui → application → infrastructure → domain �
 - 複数の論理的変更を 1 コミットに混ぜない
 - **lefthook 迂回は絶対禁止**（`--no-verify` / `LEFTHOOK=0` / `core.hooksPath` 変更等）。
   フックが落ちたら原因を直してから再コミットする
-  - `commit-msg`: `commitlint` / `pre-commit`: `ng lint` + `ng test` / `pre-push`: `npm run build`
+  - `commit-msg`: `commitlint` / `pre-commit`: staged 分の `eslint` + `vitest related` / `pre-push`: `npx vitest run` + `npm run build`
+- main への PR では [.github/workflows/ci.yml](.github/workflows/ci.yml) が
+  format / lint / **両テスト経路** / build / website ビルドを回す（E2E は所要時間の都合で手元のみ）
 
 ## コメント・テスト名は英語
 
@@ -110,4 +113,4 @@ README・`docs/`・`website/` のまとまった日本語は `natural-japanese` 
 ## 留意事項
 
 - `package.json` の `version` がリリース番号。更新は `chore(release): ...` で
-- `ng build` の予算は initial 10MB 警告 / 15MB エラー（[angular.json](angular.json) の `budgets`）
+- `ng build` の予算は initial 3.1MB 警告 / 3.5MB エラー（[angular.json](angular.json) の `budgets`）

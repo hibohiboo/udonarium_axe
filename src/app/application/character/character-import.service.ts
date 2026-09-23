@@ -5,6 +5,7 @@ import { parseImportedCharacterJson } from '@axe/domain/character/import/charact
 import { detectImportFetchPlan, ImportFetchPlan } from '@axe/domain/character/import/import-source';
 import { ImportedCharacter } from '@axe/domain/character/import/imported-character';
 import { ImportedCharacterFactory } from '@axe/domain/character/import/imported-character-factory';
+import { loadLabelMaps } from '@axe/domain/character/import/system-profiles/label-maps';
 import { DisclosureMode } from '@axe/domain/disclosure/disclosure';
 import { PeerCursor } from '@axe/domain/peer/peer-cursor';
 
@@ -34,6 +35,14 @@ let jsonpCounter = 0;
 export class CharacterImportService {
   private readonly imageStorage = inject(ImageStorage);
 
+  /**
+   * Builds a character from pasted sheet JSON or a character sheet URL, fetching the sheet and its
+   * portrait as needed.
+   *
+   * The piece is owned by you, and starts disclosed to game masters only when you are one. A
+   * failure comes back as an error kind rather than a thrown error. A portrait that cannot be
+   * fetched still leaves the character built, with `imageResolved` false.
+   */
   async importFromText(text: string): Promise<CharacterImportResult> {
     const plan = detectImportFetchPlan(text);
     if (plan.kind === 'unsupported') {
@@ -47,6 +56,7 @@ export class CharacterImportService {
       return { character: null, error: 'fetch-failed', imageResolved: false, service: serviceOf(plan) };
     }
 
+    await loadLabelMaps();
     const imported = parseImportedCharacterJson(json, plan.kind === 'jsonp' ? plan.system : undefined);
     if (!imported) {
       return { character: null, error: 'unrecognized', imageResolved: false, service: serviceOf(plan) };

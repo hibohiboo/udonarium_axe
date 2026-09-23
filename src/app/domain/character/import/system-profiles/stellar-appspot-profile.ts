@@ -1,10 +1,7 @@
 import {
   asString,
-  classifyScalar,
   createEmptyImportedCharacter,
   ImportedCharacter,
-  ImportedField,
-  ImportedGroup,
   ImportedParam,
   ImportedSection,
   ImportedStatus,
@@ -12,6 +9,7 @@ import {
   profileSectionOf,
   toFiniteNumber,
 } from '@axe/domain/character/import/imported-character';
+import { labeledSection } from '@axe/domain/character/import/system-profiles/labeled-section';
 
 interface FieldLabel {
   key: string;
@@ -56,15 +54,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
 function resolveRoot(record: Record<string, unknown>): Record<string, unknown> {
   if (asRecord(record['base']) != null) return record;
   return asRecord(record['data']) ?? record;
 }
 
+/**
+ * Whether the pasted json is a warehouse character with a named `base` and a `status` object, bare
+ * or wrapped in `data`.
+ */
 export function isStellarAppspotCharacter(parsed: unknown): boolean {
   const record = asRecord(parsed);
   if (!record) return false;
@@ -73,25 +71,12 @@ export function isStellarAppspotCharacter(parsed: unknown): boolean {
   return base != null && typeof base['name'] === 'string' && asRecord(root['status']) != null;
 }
 
-function labeledSection(label: string, array: unknown, fieldLabels: FieldLabel[]): ImportedSection | null {
-  const groups: ImportedGroup[] = [];
-  asArray(array).forEach((element, index) => {
-    const record = asRecord(element);
-    if (!record) return;
-    const name = asString(record['name']).trim();
-    const fields: ImportedField[] = [];
-    for (const field of fieldLabels) {
-      const raw = record[field.key];
-      if (!isNonEmptyScalar(raw)) continue;
-      const classified = classifyScalar(raw);
-      fields.push({ label: field.label, value: classified.value, kind: classified.kind });
-    }
-    if (name === '' && fields.length === 0) return;
-    groups.push({ label: name === '' ? `${label} ${index + 1}` : name, fields });
-  });
-  return groups.length > 0 ? { label, groups } : null;
-}
-
+/**
+ * Builds the imported model from a `stellar` warehouse character, or null for any other data.
+ *
+ * HP becomes a resource and the other status values parameters; skills, the sheath, the profile and
+ * the story become sections; and the palette offers the attack roll for two to five dice.
+ */
 export function buildStellarAppspotCharacter(parsed: unknown): ImportedCharacter | null {
   if (!isStellarAppspotCharacter(parsed)) return null;
   const root = resolveRoot(asRecord(parsed)!);

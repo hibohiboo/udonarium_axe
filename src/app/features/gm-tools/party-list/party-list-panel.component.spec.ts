@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { PartyService } from '@axe/application/party/party.service';
-import { ObjectStore } from '@axe/core/sync/object-store';
+import { TableFocusService } from '@axe/application/tabletop/table-focus.service';
+import { ConfirmService } from '@axe/application/ui/confirm.service';
 import { GameCharacter } from '@axe/domain/character/game-character';
 import { Party } from '@axe/domain/party/party';
 import { PartyListPanelComponent } from '@axe/features/gm-tools/party-list/party-list-panel.component';
@@ -11,11 +12,10 @@ describe('PartyListPanelComponent', () => {
   let component: PartyListPanelComponent;
   let fixture: ComponentFixture<PartyListPanelComponent>;
   let partyService: PartyService;
-  let store: ObjectStore;
 
   interface Panel {
     addParty: () => void;
-    removeParty: (party: Party) => void;
+    removeParty: (party: Party) => Promise<void>;
     assign: (character: GameCharacter, partyIdentifier: string) => void;
     members: (party: Party) => GameCharacter[];
     recolorParty: (party: Party, color: string) => void;
@@ -39,20 +39,14 @@ describe('PartyListPanelComponent', () => {
     fixture = TestBed.createComponent(PartyListPanelComponent);
     component = fixture.componentInstance;
     partyService = TestBed.inject(PartyService);
-    store = ObjectStore.instance;
   });
 
   afterEach(() => {
-    store.getObjects().forEach((object) => store.delete(object, false));
-    store.clearDeleteHistory();
     vi.unstubAllGlobals();
   });
 
   function stubConfirm(answer: boolean): void {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => answer)
-    );
+    vi.spyOn(TestBed.inject(ConfirmService), 'ask').mockResolvedValue(answer);
   }
 
   it('lists a new party and gives it a colour of its own', () => {
@@ -78,26 +72,26 @@ describe('PartyListPanelComponent', () => {
     expect(partyService.unassigned()).toEqual([]);
   });
 
-  it('unattaches its characters when a party goes', () => {
+  it('unattaches its characters when a party goes', async () => {
     stubConfirm(true);
     panel().addParty();
     const party = partyService.parties()[0];
     const character = makeCharacter('斥候', 'me');
     panel().assign(character, party.identifier);
 
-    panel().removeParty(party);
+    await panel().removeParty(party);
 
     expect(character.partyIdentifier).toBe('');
     expect(partyService.parties()).toEqual([]);
     expect(partyService.unassigned()).toEqual([character]);
   });
 
-  it('keeps the party when the confirmation is dismissed', () => {
+  it('keeps the party when the confirmation is dismissed', async () => {
     stubConfirm(false);
     panel().addParty();
     const party = partyService.parties()[0];
 
-    panel().removeParty(party);
+    await panel().removeParty(party);
 
     expect(partyService.parties()).toEqual([party]);
   });
@@ -109,5 +103,14 @@ describe('PartyListPanelComponent', () => {
     panel().recolorParty(party, '#fcd34d');
 
     expect(party.color).toBe('#fcd34d');
+  });
+
+  it('looks for a member where it stands, through the table focus', () => {
+    const character = makeCharacter('斥候', 'me');
+    const focusOn = vi.spyOn(TestBed.inject(TableFocusService), 'focusOn').mockImplementation(() => undefined);
+
+    (component as unknown as { focusToKoma: (c: GameCharacter) => void }).focusToKoma(character);
+
+    expect(focusOn).toHaveBeenCalledWith(character);
   });
 });

@@ -1,15 +1,12 @@
 import {
   asString,
-  classifyScalar,
   createEmptyImportedCharacter,
   ImportedCharacter,
-  ImportedField,
-  ImportedGroup,
   ImportedSection,
   ImportedSkillTable,
-  isNonEmptyScalar,
   profileSectionOf,
 } from '@axe/domain/character/import/imported-character';
+import { labeledSection } from '@axe/domain/character/import/system-profiles/labeled-section';
 
 export interface FieldLabel {
   key: string;
@@ -61,31 +58,16 @@ function resolveRoot(record: Record<string, unknown>, abilityKey: string): Recor
   return asRecord(record['data']) ?? record;
 }
 
+/**
+ * Whether the pasted json looks like a warehouse character of that family of systems: a named
+ * `base`, or an array of abilities under `abilityKey`, bare or wrapped in `data`.
+ */
 export function isPsychoFictionAppspotCharacter(parsed: unknown, abilityKey: string): boolean {
   const record = asRecord(parsed);
   if (!record) return false;
   const root = resolveRoot(record, abilityKey);
   const base = asRecord(root['base']);
   return (base != null && typeof base['name'] === 'string') || Array.isArray(root[abilityKey]);
-}
-
-function labeledSection(label: string, array: unknown, fieldLabels: FieldLabel[]): ImportedSection | null {
-  const groups: ImportedGroup[] = [];
-  asArray(array).forEach((element, index) => {
-    const record = asRecord(element);
-    if (!record) return;
-    const name = asString(record['name']).trim();
-    const fields: ImportedField[] = [];
-    for (const field of fieldLabels) {
-      const raw = record[field.key];
-      if (!isNonEmptyScalar(raw)) continue;
-      const classified = classifyScalar(raw);
-      fields.push({ label: field.label, value: classified.value, kind: classified.kind });
-    }
-    if (name === '' && fields.length === 0) return;
-    groups.push({ label: name === '' ? `${label} ${index + 1}` : name, fields });
-  });
-  return groups.length > 0 ? { label, groups } : null;
 }
 
 function buildSkillTable(root: Record<string, unknown>, config: PsychoFictionConfig): ImportedSkillTable {
@@ -126,6 +108,14 @@ function buildPalette(abilities: unknown, targetSkillKey: string): string {
   return lines.join('\n');
 }
 
+/**
+ * Builds the imported model from a warehouse character of that family of systems, as `config`
+ * describes it, or null for data of another shape.
+ *
+ * Abilities, background, any extra sections, the profile and the outline become sections; the
+ * learned skills and gaps a skill table; and the palette offers a 2D6 roll of 5 or more for each
+ * ability.
+ */
 export function buildPsychoFictionCharacter(parsed: unknown, config: PsychoFictionConfig): ImportedCharacter | null {
   if (!isPsychoFictionAppspotCharacter(parsed, config.abilityKey)) return null;
   const root = resolveRoot(asRecord(parsed)!, config.abilityKey);

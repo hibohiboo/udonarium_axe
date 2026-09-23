@@ -10,21 +10,23 @@ function makeTableElement(): DataElement {
   const table = DataElement.create('SkillTable', '');
   const header = DataElement.create('header', '', { tableControl: 'true' });
   const skill = DataElement.create('skill', '', { columnLabel: '技能' });
-  const gap = DataElement.create('gap', '', { columnLabel: '間', gapColumn: 'true' });
+  const gap = DataElement.create('gap', '', { columnLabel: '間', cellKind: 'gap' });
   const stat = DataElement.create('stat', '', { columnLabel: '能力値' });
   header.appendChild(skill);
   header.appendChild(gap);
   header.appendChild(stat);
   table.appendChild(header);
 
-  const row = DataElement.create('row1', '');
-  const cellSkill = DataElement.create('skill', '0', { fieldType: DataElementFieldType.CHECK });
-  const cellGap = DataElement.create('gap', '0', { fieldType: DataElementFieldType.CHECK });
-  const cellStat = DataElement.create('stat', '5');
-  row.appendChild(cellSkill);
-  row.appendChild(cellGap);
-  row.appendChild(cellStat);
-  table.appendChild(row);
+  for (const name of ['row1', 'row2']) {
+    const row = DataElement.create(name, '');
+    const cellSkill = DataElement.create('skill', '0', { fieldType: DataElementFieldType.CHECK });
+    const cellGap = DataElement.create('gap', '0', { fieldType: DataElementFieldType.CHECK, cellKind: 'gap' });
+    const cellStat = DataElement.create('stat', '5');
+    row.appendChild(cellSkill);
+    row.appendChild(cellGap);
+    row.appendChild(cellStat);
+    table.appendChild(row);
+  }
 
   return table;
 }
@@ -48,6 +50,61 @@ describe('GameDataElementTableViewComponent', () => {
 
   it('should create', () => {
     expect(component).toBeTruthy();
+  });
+
+  describe('ticking a whole column from its heading', () => {
+    function columnNamed(name: string) {
+      return component.tableColumns().find((column) => column.name === name)!;
+    }
+
+    function cellsIn(name: string) {
+      return component.tableBodyRows().map((row) => component.getTableCell(row, name)!);
+    }
+
+    it('offers a box on a column of boxes, and on nothing else', () => {
+      fixture.detectChanges();
+
+      expect(component.hasTableColumnChecks(columnNamed('skill'))).toBe(true);
+      expect(component.hasTableColumnChecks(columnNamed('stat'))).toBe(false);
+      expect(component.hasTableColumnChecks(columnNamed('gap'))).toBe(false);
+    });
+
+    it('ticks every box under it, and clears them again', () => {
+      fixture.detectChanges();
+      const column = columnNamed('skill');
+
+      component.setTableColumnChecked(column, { stopPropagation: () => undefined } as Event);
+
+      expect(cellsIn('skill').every((cell) => component.isTableCheckCellChecked(cell))).toBe(true);
+      expect(component.isTableColumnAllChecked(column)).toBe(true);
+
+      component.setTableColumnChecked(column, { stopPropagation: () => undefined } as Event);
+
+      expect(cellsIn('skill').some((cell) => component.isTableCheckCellChecked(cell))).toBe(false);
+    });
+
+    it('stands half filled while only some of the column is ticked', () => {
+      fixture.detectChanges();
+      const column = columnNamed('skill');
+      component.toggleTableCheckCell(cellsIn('skill')[0]);
+
+      expect(component.isTableColumnPartlyChecked(column)).toBe(true);
+      expect(component.isTableColumnAllChecked(column)).toBe(false);
+
+      component.setTableColumnChecked(column, { stopPropagation: () => undefined } as Event);
+
+      expect(component.isTableColumnPartlyChecked(column)).toBe(false);
+      expect(component.isTableColumnAllChecked(column)).toBe(true);
+    });
+
+    it('leaves the boxes alone where the values are locked', () => {
+      componentRef.setInput('isValueLocked', true);
+      fixture.detectChanges();
+
+      component.setTableColumnChecked(columnNamed('skill'), { stopPropagation: () => undefined } as Event);
+
+      expect(cellsIn('skill').some((cell) => component.isTableCheckCellChecked(cell))).toBe(false);
+    });
   });
 
   it('scrolls the table sideways from the wheel', () => {
@@ -128,6 +185,42 @@ describe('GameDataElementTableViewComponent', () => {
     // baseDifficulty defaults to 5 when attribute missing, + distance(3) = 8
     expect(requestSpy).toHaveBeenCalledWith('2d6>=8');
     expect(component.judgeCandidatesState()).toBeNull();
+  });
+
+  it('says what the roll is for, behind a space the dice bot stops at', () => {
+    const uiSignal = TestBed.inject(UiSignalService);
+    const requestSpy = vi.spyOn(uiSignal, 'requestChatInputText').mockImplementation(() => {});
+    component.judgeCandidatesState.set({ clickedCellLabel: '静音移動', candidates: [] });
+    const candidate = { cell: null, rowName: '2', colName: '技巧', colLabel: '技巧', cellLabel: '解錠', distance: 2 };
+
+    component.sendCandidateToChat(candidate as never);
+
+    const [text] = requestSpy.mock.calls[0];
+    expect(text.split(' ')[0]).toBe('2d6>=7');
+    expect(text).toContain('静音移動');
+    expect(text).toContain('解錠');
+  });
+
+  it('names the column where the cell carries no label of its own', () => {
+    const uiSignal = TestBed.inject(UiSignalService);
+    const requestSpy = vi.spyOn(uiSignal, 'requestChatInputText').mockImplementation(() => {});
+    component.judgeCandidatesState.set({ clickedCellLabel: '静音移動', candidates: [] });
+    const candidate = { cell: null, rowName: '2', colName: '身体', colLabel: '身体', cellLabel: '', distance: 1 };
+
+    component.sendCandidateToChat(candidate as never);
+
+    expect(requestSpy.mock.calls[0][0]).toContain('身体');
+  });
+
+  it('sends the roll alone when there is nothing to name', () => {
+    const uiSignal = TestBed.inject(UiSignalService);
+    const requestSpy = vi.spyOn(uiSignal, 'requestChatInputText').mockImplementation(() => {});
+    component.judgeCandidatesState.set({ clickedCellLabel: '', candidates: [] });
+    const candidate = { cell: null, rowName: '', colName: '', colLabel: '', cellLabel: '', distance: 1 };
+
+    component.sendCandidateToChat(candidate as never);
+
+    expect(requestSpy).toHaveBeenCalledWith('2d6>=6');
   });
 
   it('reads the base difficulty off the attribute', () => {

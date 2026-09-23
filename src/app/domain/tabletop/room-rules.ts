@@ -1,0 +1,219 @@
+import { asDiagonalMove, DEFAULT_DIAGONAL_MOVE, DiagonalMove } from '@axe/domain/tabletop/move/diagonal-move';
+import {
+  asBreakOutMode,
+  BreakOutMode,
+  DEFAULT_BREAK_OUT_COST,
+  DEFAULT_BREAK_OUT_MODE,
+} from '@axe/domain/tabletop/move/engagement';
+import {
+  DEFAULT_CELL_DISTANCE,
+  DEFAULT_CELL_DISTANCE_UNIT,
+  DEFAULT_MOVE_RANGE_ELEMENT_NAMES,
+} from '@axe/domain/tabletop/move/move-cells';
+import {
+  asZocMode,
+  DEFAULT_ZOC_EXTRA_COST,
+  DEFAULT_ZOC_MODE,
+  DEFAULT_ZOC_RANGE,
+  ZocMode,
+} from '@axe/domain/tabletop/move/zone-of-control';
+import { DEFAULT_TABLE_FACING_MARK } from '@axe/domain/tabletop/table-facing-mark';
+
+/** How a piece walks and what an enemy holds against it, as the table plays it. */
+export interface RoomRules {
+  moveRangeEnabled: boolean;
+  moveRangeElementNames: string;
+  /** Whether a corner may be cut at all, which is what a table said before it could say how. */
+  moveDiagonally: boolean;
+  /** How a corner is counted: see {@link DiagonalMove}. */
+  diagonalMove: DiagonalMove;
+  piecesShareCells: boolean;
+  moveRangeAlways: boolean;
+  zocAlways: boolean;
+  cellDistance: number;
+  cellDistanceUnit: string;
+  zocMode: ZocMode;
+  zocRange: number;
+  zocExtraCost: number;
+  /**
+   * Whether pieces standing against one another are held as one fight rather than as pairs.
+   *
+   * Left off, every enemy holds its own ground and nothing joins up. Turned on, whoever stands
+   * beside a piece already fighting is in the same fight, and what it costs to get out of one
+   * is weighed side against side rather than enemy by enemy.
+   */
+  zocEngages: boolean;
+  /** What a piece has to do to walk out of a fight: see {@link BreakOutMode}. */
+  breakOutMode: BreakOutMode;
+  /** What leaving costs where the table charges the same for every leaving. */
+  breakOutCost: number;
+  /** Whether a piece weighs what it covers in that reckoning, rather than one apiece. */
+  engagementCountsSize: boolean;
+  facingMark: string;
+  /**
+   * Whether a piece is drawn no taller than the cell it stands on.
+   *
+   * A tall picture towers over its cell, which over a table laid flat smears it across
+   * whatever is behind. The room answers for it so that everyone reads the same board.
+   */
+  pieceImageInCell: boolean;
+}
+
+/** The same rules in the looser terms a table holds them and an attribute carries them. */
+export type RoomRuleValues = Omit<RoomRules, 'zocMode' | 'diagonalMove' | 'breakOutMode'> & {
+  zocMode: string;
+  diagonalMove: string;
+  breakOutMode: string;
+};
+
+/** The same questions as the room hears them, where null is one it has not answered. */
+export type RoomRuleAnswers = { [Rule in keyof RoomRuleValues]: RoomRuleValues[Rule] | null };
+
+export const ROOM_RULE_DEFAULTS: RoomRules = {
+  moveRangeEnabled: true,
+  moveRangeElementNames: DEFAULT_MOVE_RANGE_ELEMENT_NAMES,
+  moveDiagonally: true,
+  diagonalMove: DEFAULT_DIAGONAL_MOVE,
+  piecesShareCells: true,
+  moveRangeAlways: false,
+  zocAlways: false,
+  cellDistance: DEFAULT_CELL_DISTANCE,
+  cellDistanceUnit: DEFAULT_CELL_DISTANCE_UNIT,
+  zocMode: DEFAULT_ZOC_MODE,
+  zocRange: DEFAULT_ZOC_RANGE,
+  zocExtraCost: DEFAULT_ZOC_EXTRA_COST,
+  zocEngages: false,
+  breakOutMode: DEFAULT_BREAK_OUT_MODE,
+  breakOutCost: DEFAULT_BREAK_OUT_COST,
+  engagementCountsSize: true,
+  facingMark: DEFAULT_TABLE_FACING_MARK,
+  pieceImageInCell: false,
+};
+
+/** The rules that are set together, and so are handed back to the table together. */
+export const ROOM_RULE_GROUPS = {
+  moveRange: [
+    'moveRangeEnabled',
+    'moveRangeAlways',
+    'moveDiagonally',
+    'diagonalMove',
+    'piecesShareCells',
+    'moveRangeElementNames',
+    'cellDistance',
+    'cellDistanceUnit',
+  ],
+  zoc: [
+    'zocMode',
+    'zocRange',
+    'zocAlways',
+    'zocExtraCost',
+    'zocEngages',
+    'breakOutMode',
+    'breakOutCost',
+    'engagementCountsSize',
+  ],
+  facing: ['facingMark'],
+  flatPieces: ['pieceImageInCell'],
+} as const satisfies Record<string, readonly (keyof RoomRules)[]>;
+
+export type RoomRuleGroup = keyof typeof ROOM_RULE_GROUPS;
+
+/** Whether the room has taken over any of the rules in a group, or left them all alone. */
+export function isGroupAnswered(answers: Partial<RoomRuleAnswers> | null, group: RoomRuleGroup): boolean {
+  return ROOM_RULE_GROUPS[group].some((rule) => (answers?.[rule] ?? null) !== null);
+}
+
+/** What a room holds where it has no answer of its own. */
+export const ROOM_RULE_UNANSWERED = '';
+
+/** Reads a yes or no the room writes as text, which is what a room attribute can carry. */
+export function readRuleFlag(held: unknown): boolean | null {
+  if (held === true || held === false) return held;
+  const text = `${held ?? ''}`;
+  if (text === '1') return true;
+  if (text === '0') return false;
+  return null;
+}
+
+/** Writes a yes or no the way readRuleFlag reads it: `1`, `0`, or empty for no answer. */
+export function writeRuleFlag(answer: boolean | null): string {
+  if (answer === null) return ROOM_RULE_UNANSWERED;
+  return answer ? '1' : '0';
+}
+
+/** Reads a number the room writes, where anything below zero stands for no answer. */
+export function readRuleNumber(held: unknown): number | null {
+  const text = `${held ?? ''}`.trim();
+  if (typeof held !== 'number' && text.length < 1) return null;
+  const amount = typeof held === 'number' ? held : Number(text);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  return amount;
+}
+
+/**
+ * Writes a number the way readRuleNumber reads it, with -1 for no answer or for anything that is
+ * not a finite number of zero or more.
+ */
+export function writeRuleNumber(answer: number | null): number {
+  if (answer === null || !Number.isFinite(answer) || answer < 0) return -1;
+  return answer;
+}
+
+/** Reads a word the room writes, where nothing written stands for no answer. */
+export function readRuleText(held: unknown): string | null {
+  const text = `${held ?? ''}`;
+  return text.length > 0 ? text : null;
+}
+
+/** Writes a word the way readRuleText reads it, with empty for no answer. */
+export function writeRuleText(answer: string | null): string {
+  return answer === null ? ROOM_RULE_UNANSWERED : answer;
+}
+
+/**
+ * What the rules come to, asking the room first and the table it leaves out second.
+ *
+ * A room that has never been asked answers nothing at all, so a table carries on ruling
+ * itself as it always has; the first answer the room gives is the first rule it takes over.
+ */
+export function resolveRoomRules(
+  room: Partial<RoomRuleAnswers> | null,
+  table: Partial<RoomRuleValues> | null
+): RoomRules {
+  const settled = <Rule extends keyof RoomRuleValues>(rule: Rule): RoomRuleValues[Rule] => {
+    const answered = room?.[rule];
+    if (answered !== null && answered !== undefined) return answered;
+    const ruled = table?.[rule];
+    if (ruled !== null && ruled !== undefined) return ruled;
+    return ROOM_RULE_DEFAULTS[rule];
+  };
+
+  const cutsCorners = settled('moveDiagonally');
+  return {
+    moveRangeEnabled: settled('moveRangeEnabled'),
+    moveRangeElementNames: settled('moveRangeElementNames'),
+    moveDiagonally: cutsCorners,
+    // How a corner is counted is a newer question than whether it may be cut at all, so the
+    // older answer stands in for it rather than the default doing: a room or a table that only
+    // ever said "corners are allowed" is saying a corner costs what a side costs, which is what
+    // it did when that was all a table could say.
+    diagonalMove:
+      asDiagonalMove(room?.diagonalMove) ??
+      asDiagonalMove(table?.diagonalMove) ??
+      (cutsCorners ? DEFAULT_DIAGONAL_MOVE : 'none'),
+    piecesShareCells: settled('piecesShareCells'),
+    moveRangeAlways: settled('moveRangeAlways'),
+    zocAlways: settled('zocAlways'),
+    cellDistance: settled('cellDistance'),
+    cellDistanceUnit: settled('cellDistanceUnit'),
+    zocMode: asZocMode(settled('zocMode')),
+    zocRange: settled('zocRange'),
+    zocExtraCost: settled('zocExtraCost'),
+    zocEngages: settled('zocEngages'),
+    breakOutMode: asBreakOutMode(settled('breakOutMode')),
+    breakOutCost: settled('breakOutCost'),
+    engagementCountsSize: settled('engagementCountsSize'),
+    facingMark: settled('facingMark'),
+    pieceImageInCell: settled('pieceImageInCell'),
+  };
+}

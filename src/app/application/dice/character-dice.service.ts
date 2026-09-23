@@ -1,4 +1,5 @@
-import { Injectable } from '@angular/core';
+import { inject, Injectable } from '@angular/core';
+import { ObjectStore } from '@axe/core/sync/object-store';
 import {
   heldDiceOf,
   HeldDie,
@@ -25,8 +26,33 @@ const DICE_OFFSET_PX = 60;
  */
 @Injectable({ providedIn: 'root' })
 export class CharacterDiceService {
+  private readonly objectStore = inject(ObjectStore);
+
+  /** The dice a character keeps on its sheet, which are the ones not out on the table. */
   held(character: GameCharacter): HeldDie[] {
     return heldDiceOf(character);
+  }
+
+  /** The dice of this character that are out on the table, in the order they were laid. */
+  laidOut(character: GameCharacter): DiceSymbol[] {
+    return this.objectStore
+      .getObjects<DiceSymbol>(DiceSymbol)
+      .filter((die) => die.ownerCharacterIdentifier === character.identifier);
+  }
+
+  /**
+   * Takes every die of this character off the table, and says how many came back.
+   *
+   * A handful swept up is one sweep: the sound belongs to the gesture rather than to each
+   * die, and six of them at once would be six of the same noise over one another.
+   */
+  putAway(character: GameCharacter): number {
+    let taken = 0;
+    for (const die of this.laidOut(character)) {
+      if (this.take(character, die)) taken++;
+    }
+    if (taken > 0) SoundEffect.play(PresetSound.sweep);
+    return taken;
   }
 
   /**
@@ -57,12 +83,17 @@ export class CharacterDiceService {
    * Takes a die off the table and onto the character's sheet.
    *
    * The die itself goes: what is kept is its name, its faces and how many there are, and
-   * leaving the object behind as well would put the same die in two places.
+   * leaving the object behind as well would put the same die in two places. One the sheet
+   * could not keep stays where it stands, rather than being lost between the two.
    */
   store(character: GameCharacter, symbol: DiceSymbol): void {
-    storeHeldDie(character, heldDieOfSymbol(symbol));
+    if (this.take(character, symbol)) SoundEffect.play(PresetSound.sweep);
+  }
+
+  private take(character: GameCharacter, symbol: DiceSymbol): boolean {
+    if (!storeHeldDie(character, heldDieOfSymbol(symbol))) return false;
     symbol.destroy();
-    SoundEffect.play(PresetSound.sweep);
+    return true;
   }
 
   /** Puts one back onto the sheet without a die on the table to take it from. */
